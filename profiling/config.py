@@ -9,6 +9,7 @@ analysis to just those names.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Optional
 
 
@@ -29,6 +30,9 @@ class ProfileConfig:
     sparsity_columns : Optional[list[str]]
         Columns included in the overall sparsity calculation.
         None → falls back to `columns`.
+    type_detection_columns : Optional[list[str]]
+        Columns on which data-type detection is run.
+        None → type detection is skipped entirely (opt-in).
     memory_threshold_mb : float
         If total DataFrame memory exceeds this value (in MB) the profiler
         switches to chunked analysis for the metrics that support it.
@@ -39,6 +43,7 @@ class ProfileConfig:
     columns: Optional[list[str]] = None
     duplicate_columns: Optional[list[str]] = None
     sparsity_columns: Optional[list[str]] = None
+    type_detection_columns: Optional[list[str]] = None  # opt-in per-column
     memory_threshold_mb: float = 500.0
     chunk_size: int = 100_000
 
@@ -76,6 +81,56 @@ class MemoryBreakdown:
         return self.sorted_by_usage[:n]
 
 
+# ---------------------------------------------------------------------------
+# Data-type detection results
+# ---------------------------------------------------------------------------
+
+
+class NumericKind(StrEnum):
+    Continuous = "continuous"
+    Discrete = "discrete"
+
+
+class TypeFlag(StrEnum):
+    """Non-exclusive flags that can be attached to a column."""
+
+    BooleanCandidate = "boolean_candidate"
+    EncodedCategory = "encoded_category"     # low-cardinality int
+    IdentifierColumn = "identifier_column"   # near-100 % unique
+    SequentialIndex = "sequential_index"     # range(0,n) or range(1,n+1)
+    NumericCoerced = "numeric_coerced"       # was object, successfully coerced
+    DatetimeCoerced = "datetime_coerced"     # was object, successfully coerced
+
+
+@dataclass
+class ColumnTypeInfo:
+    """
+    Type-detection result for a single column.
+
+    Attributes
+    ----------
+    column : str
+        Column name.
+    original_dtype : str
+        Polars dtype string before any coercion.
+    inferred_dtype : str
+        Dtype after attempted coercion (same as original if no coercion).
+    numeric_kind : Optional[NumericKind]
+        Whether the column is continuous or discrete (numeric columns only).
+    flags : list[TypeFlag]
+        Zero or more non-exclusive behavioural flags.
+    """
+
+    column: str
+    original_dtype: str
+    inferred_dtype: str
+    numeric_kind: Optional[NumericKind] = None
+    flags: list[TypeFlag] = field(default_factory=list)
+
+    def has_flag(self, flag: TypeFlag) -> bool:
+        return flag in self.flags
+
+
 @dataclass
 class TabularProfileResult:
     """
@@ -99,6 +154,9 @@ class TabularProfileResult:
 
     # Sparsity  (scoped to sparsity_columns)
     overall_sparsity: float = 0.0  # fraction of cells that are NaN/None
+
+    # Type detection  (scoped to type_detection_columns; empty if not opted-in)
+    column_type_info: dict[str, ColumnTypeInfo] = field(default_factory=dict)
 
     # Metadata
     analysed_columns: list[str] = field(default_factory=list)
@@ -124,4 +182,13 @@ class TabularProfileResult:
             lines.append("  Top memory consumers:")
             for col, b in self.memory_breakdown.top_consumers():
                 lines.append(f"    {col:30s}  {b / (1024**2):.3f} MB")
+        if self.column_type_info:
+            lines.append("  Type detection:")
+            for col, info in self.column_type_info.items():
+                flags_str = ", ".join(info.flags) if info.flags else "—"
+                kind_str = f"  [{info.numeric_kind}]" if info.numeric_kind else ""
+                lines.append(
+                    f"    {col:30s}  {info.original_dtype} → {info.inferred_dtype}"
+                    f"{kind_str}  flags=[{flags_str}]"
+                )
         return "\n".join(lines)

@@ -1,23 +1,25 @@
 """
 TabularProfiler  –  Phase 1: Structural Profiling for tabular datasets.
 
+All DataFrame operations use Polars (no pandas dependency).
+
 Computes:
   • row / column count                (always full dataset)
   • memory usage + per-column breakdown when threshold exceeded
   • duplicate row count & ratio       (scoped to config.duplicate_columns)
   • overall sparsity                  (scoped to config.sparsity_columns)
+  • data-type detection               (scoped to config.type_detection_columns;
+                                       skipped entirely when None)
 
 Chunked processing is activated automatically when the DataFrame's
-reported memory exceeds config.memory_threshold_mb. Pandas is used
-directly; if the caller has already loaded data via Dask they should
-call .compute() first or provide a custom subclass.
+estimated memory exceeds config.memory_threshold_mb.
 """
 from __future__ import annotations
 
 import math
 from typing import Any
 
-import pandas as pd
+import polars as pl
 
 from models.data_structure import DataStructure
 from profiling.base import Profiling
@@ -26,17 +28,19 @@ from profiling.config import (
     ProfileConfig,
     TabularProfileResult,
 )
+from profiling.type_detector import TypeDetector
 
 
 class TabularProfiler(Profiling[TabularProfileResult]):
     """
-    Structural profiler for pandas DataFrames.
+    Structural profiler for Polars DataFrames.
 
     Usage
     -----
     >>> cfg = ProfileConfig(
     ...     duplicate_columns=["user_id", "event_time"],
     ...     sparsity_columns=["age", "income", "postcode"],
+    ...     type_detection_columns=["age", "income", "postcode", "created_at"],
     ...     memory_threshold_mb=200,
     ... )
     >>> profiler = TabularProfiler(config=cfg)
@@ -52,9 +56,9 @@ class TabularProfiler(Profiling[TabularProfileResult]):
     # ------------------------------------------------------------------
 
     def profile(self, data: Any) -> TabularProfileResult:
-        if not isinstance(data, pd.DataFrame):
+        if not isinstance(data, pl.DataFrame):
             raise TypeError(
-                f"TabularProfiler expects a pandas DataFrame, got {type(data).__name__}."
+                f"TabularProfiler expects a Polars DataFrame, got {type(data).__name__}."
             )
         return self._run(data)
 
@@ -62,21 +66,21 @@ class TabularProfiler(Profiling[TabularProfileResult]):
     # Internals
     # ------------------------------------------------------------------
 
-    def _run(self, df: pd.DataFrame) -> TabularProfileResult:
+    def _run(self, df: pl.DataFrame) -> TabularProfileResult:
         result = TabularProfileResult()
 
         # 1. Shape — always computed on the full frame
-        result.row_count = len(df)
-        result.column_count = len(df.columns)
+        result.row_count = df.height
+        result.column_count = df.width
 
         # 2. Memory
         self._analyse_memory(df, result)
 
-        # Decide processing mode AFTER memory analysis so we can log it
+        # Decide processing mode AFTER memory analysis
         use_chunks = result.memory_exceeded_threshold and result.row_count > 0
 
         # 3. Resolve column scopes
-        all_cols: list[str] = df.columns.tolist()
+        all_cols: list[str] = df.columns
 
         analysed_cols = self._resolve_columns(all_cols, self.config.columns)
         dup_cols = self._resolve_columns(
@@ -92,7 +96,9 @@ class TabularProfiler(Profiling[TabularProfileResult]):
         result.was_chunked = use_chunks
 
         if result.row_count == 0:
-            return result  # nothing more to do on an empty frame
+            # Still run type detection on empty frame if requested
+            self._run_type_detection(df, all_cols, result)
+            return result
 
         # 4. Duplicates & 5. Sparsity
         if use_chunks:
@@ -100,43 +106,40 @@ class TabularProfiler(Profiling[TabularProfileResult]):
         else:
             self._full_metrics(df, dup_cols, sparsity_cols, result)
 
+        # 6. Type detection (selective — only when type_detection_columns set)
+        self._run_type_detection(df, all_cols, result)
+
         return result
 
     # ------------------------------------------------------------------
     # Memory analysis
     # ------------------------------------------------------------------
 
-    def _analyse_memory(self, df: pd.DataFrame, result: TabularProfileResult) -> None:
+    def _analyse_memory(self, df: pl.DataFrame, result: TabularProfileResult) -> None:
         """
         Populate memory fields on *result*.
 
-        deep=True walks object columns to get the actual heap usage of
-        Python strings / dicts stored inside the DataFrame.
+        Polars exposes estimated_size() per Series for heap allocation.
         """
-        mem_series: pd.Series = df.memory_usage(deep=True)
-        # memory_usage returns a Series indexed by column name plus "Index"
-        total_bytes: int = int(mem_series.sum())
+        col_bytes: dict[str, int] = {
+            col: df[col].estimated_size() for col in df.columns
+        }
+        total_bytes = sum(col_bytes.values())
 
         result.total_memory_bytes = total_bytes
         threshold_bytes = self.config.memory_threshold_mb * 1024 * 1024
         result.memory_exceeded_threshold = total_bytes > threshold_bytes
 
         if result.memory_exceeded_threshold:
-            # Exclude the synthetic "Index" entry for the breakdown
-            col_bytes = {
-                col: int(mem_series[col])
-                for col in mem_series.index
-                if col != "Index" and col in df.columns
-            }
             result.memory_breakdown = MemoryBreakdown(column_bytes=col_bytes)
 
     # ------------------------------------------------------------------
-    # Full-frame metrics  (used when memory is below threshold)
+    # Full-frame metrics
     # ------------------------------------------------------------------
 
     def _full_metrics(
         self,
-        df: pd.DataFrame,
+        df: pl.DataFrame,
         dup_cols: list[str],
         sparsity_cols: list[str],
         result: TabularProfileResult,
@@ -148,12 +151,12 @@ class TabularProfiler(Profiling[TabularProfileResult]):
         result.overall_sparsity = self._compute_sparsity(df, sparsity_cols)
 
     # ------------------------------------------------------------------
-    # Chunked metrics  (used when memory exceeds threshold)
+    # Chunked metrics
     # ------------------------------------------------------------------
 
     def _chunked_metrics(
         self,
-        df: pd.DataFrame,
+        df: pl.DataFrame,
         dup_cols: list[str],
         sparsity_cols: list[str],
         result: TabularProfileResult,
@@ -161,12 +164,9 @@ class TabularProfiler(Profiling[TabularProfileResult]):
         """
         Stream through the DataFrame in row-chunks to keep peak memory low.
 
-        Duplicate detection across chunks works by hashing the dup_cols
-        subset and collecting seen hashes — exact semantics match
-        pandas drop_duplicates(keep='first').
-
-        Sparsity is accumulated as (missing_cells, total_cells) and
-        converted to a fraction at the end.
+        Duplicate detection: hash the dup_cols subset row-by-row and track
+        seen hashes — semantics match keep='first'.
+        Sparsity is accumulated as (missing_cells, total_cells).
         """
         chunk_size = self.config.chunk_size
         n_chunks = math.ceil(result.row_count / chunk_size)
@@ -178,15 +178,12 @@ class TabularProfiler(Profiling[TabularProfileResult]):
 
         for i in range(n_chunks):
             start = i * chunk_size
-            chunk: pd.DataFrame = df.iloc[start : start + chunk_size]
+            end = min(start + chunk_size, result.row_count)
+            chunk: pl.DataFrame = df.slice(start, end - start)
 
             # --- duplicates ---
-            if dup_cols:
-                sub = chunk[dup_cols]
-            else:
-                sub = chunk
-
-            for row_tuple in sub.itertuples(index=False, name=None):
+            sub = chunk.select(dup_cols) if dup_cols else chunk
+            for row_tuple in sub.iter_rows():
                 h = hash(row_tuple)
                 if h in seen_hashes:
                     dup_count += 1
@@ -194,32 +191,66 @@ class TabularProfiler(Profiling[TabularProfileResult]):
                     seen_hashes.add(h)
 
             # --- sparsity ---
-            if sparsity_cols:
-                sparsity_chunk = chunk[sparsity_cols]
-            else:
-                sparsity_chunk = chunk
-
-            missing_cells += int(sparsity_chunk.isna().sum().sum())
-            total_cells += sparsity_chunk.size
+            sparsity_chunk = chunk.select(sparsity_cols) if sparsity_cols else chunk
+            missing_cells += int(
+                sparsity_chunk.select(
+                    pl.all().is_null().sum()
+                ).row(0)[0]
+                if sparsity_chunk.width == 1
+                else sum(sparsity_chunk.select(pl.all().is_null().sum()).row(0))
+            )
+            total_cells += sparsity_chunk.height * sparsity_chunk.width
 
         result.duplicate_row_count = dup_count
         result.duplicate_ratio = dup_count / result.row_count if result.row_count else 0.0
         result.overall_sparsity = missing_cells / total_cells if total_cells else 0.0
 
     # ------------------------------------------------------------------
+    # Type detection
+    # ------------------------------------------------------------------
+
+    def _run_type_detection(
+        self,
+        df: pl.DataFrame,
+        all_cols: list[str],
+        result: TabularProfileResult,
+    ) -> None:
+        """Run TypeDetector on the opted-in columns only."""
+        if self.config.type_detection_columns is None:
+            return  # opt-in not set — skip entirely
+
+        detection_cols = self._resolve_columns(
+            all_cols, self.config.type_detection_columns
+        )
+        if not detection_cols:
+            return
+
+        detector = TypeDetector(detection_cols)
+        result.column_type_info = detector.detect(df)
+
+    # ------------------------------------------------------------------
     # Stateless helpers
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _count_duplicates(df: pd.DataFrame, cols: list[str]) -> int:
-        subset = cols if cols else None
-        # keep=False marks ALL duplicates; keep='first' marks all *but* the
-        # first occurrence — we want the number of *redundant* rows.
-        return int(df.duplicated(subset=subset, keep="first").sum())
+    def _count_duplicates(df: pl.DataFrame, cols: list[str]) -> int:
+        """
+        Count rows that are duplicates (keeping first occurrence).
+
+        Equivalent to pandas duplicated(subset=cols, keep='first').sum().
+        """
+        sub = df.select(cols) if cols else df
+        # is_duplicated() marks ALL occurrences of a duplicate group.
+        # We want only the non-first occurrences, so we subtract the
+        # number of unique rows.
+        n_unique = sub.unique().height
+        return df.height - n_unique
 
     @staticmethod
-    def _compute_sparsity(df: pd.DataFrame, cols: list[str]) -> float:
-        sub = df[cols] if cols else df
-        if sub.size == 0:
+    def _compute_sparsity(df: pl.DataFrame, cols: list[str]) -> float:
+        sub = df.select(cols) if cols else df
+        total = sub.height * sub.width
+        if total == 0:
             return 0.0
-        return float(sub.isna().sum().sum()) / sub.size
+        missing = sum(sub.select(pl.all().is_null().sum()).row(0))
+        return missing / total
