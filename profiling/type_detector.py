@@ -13,6 +13,7 @@ Detection pipeline (in order, applied per column):
   6. Sequential index   – integer column == range(0,n) or range(1,n+1)
   7. Numeric kind       – continuous vs discrete for confirmed numeric cols
 """
+
 from __future__ import annotations
 
 import re
@@ -26,11 +27,13 @@ if TYPE_CHECKING:
     pass
 
 # Threshold constants
-_NUMERIC_COERCE_THRESHOLD = 0.95   # ≥95 % non-null after cast → reclassify
+_NUMERIC_COERCE_THRESHOLD = 0.95  # ≥95 % non-null after cast → reclassify
 _DATETIME_COERCE_THRESHOLD = 0.80  # ≥80 % non-null after cast → reclassify
 _ENCODED_CATEGORY_MAX_UNIQUE = 15  # int with fewer unique values → label-encoded
-_IDENTIFIER_UNIQUE_RATIO = 0.99    # >99 % unique → identifier
-_DISCRETE_NUNIQUE_THRESHOLD = 20   # numeric with <20 unique values → discrete
+_ENCODED_CATEGORY_MAX_RATIO = 0.05
+_IDENTIFIER_UNIQUE_RATIO = 0.99  # >99 % unique → identifier
+_IDENTIFIER_MAX_MEDIAN_LENGTH = 40
+_DISCRETE_NUNIQUE_THRESHOLD = 20  # numeric with <20 unique values → discrete
 
 # Column-name patterns that suggest datetime content
 _DATE_NAME_RE = re.compile(
@@ -43,8 +46,14 @@ _BOOL_STRING_SET = {"true", "false", "yes", "no", "t", "f", "0", "1"}
 
 # Polars integer types
 _INT_DTYPES = {
-    pl.Int8, pl.Int16, pl.Int32, pl.Int64,
-    pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64,
+    pl.Int8,
+    pl.Int16,
+    pl.Int32,
+    pl.Int64,
+    pl.UInt8,
+    pl.UInt16,
+    pl.UInt32,
+    pl.UInt64,
 }
 
 # Polars numeric types (integer + float)
@@ -96,7 +105,9 @@ class TypeDetector:
                     info.flags.append(flag)  # type: ignore[arg-type]
                     working = coerced
                 else:
-                    coerced_dt, flag_dt = self._try_datetime_coerce(series, col_name, n_rows)
+                    coerced_dt, flag_dt = self._try_datetime_coerce(
+                        series, col_name, n_rows
+                    )
                     if coerced_dt is not None:
                         info.inferred_dtype = str(coerced_dt.dtype)
                         info.flags.append(flag_dt)  # type: ignore[arg-type]
@@ -115,13 +126,20 @@ class TypeDetector:
                 self._check_identifier(working, info, n_rows)
 
                 # 6: Sequential index (integers only)
-                if working.dtype in _INT_DTYPES:
+                if working.dtype in _INT_DTYPES or working.dtype in (
+                    pl.Float32,
+                    pl.Float64,
+                ):
                     self._check_sequential_index(working, info, n_rows)
 
                 # 7: Numeric kind (skip for identifiers / sequential indices)
                 if not any(
                     info.has_flag(f)
-                    for f in (TypeFlag.IdentifierColumn, TypeFlag.SequentialIndex)
+                    for f in (
+                        TypeFlag.IdentifierColumn,
+                        TypeFlag.SequentialIndex,
+                        TypeFlag.FloatSequentialIndex,
+                    )
                 ):
                     self._classify_numeric_kind(working, info)
 
@@ -218,8 +236,30 @@ class TypeDetector:
         # Skip if already flagged as boolean candidate (subset of {0,1})
         if TypeFlag.BooleanCandidate in info.flags:
             return
-        n_unique = series.drop_nulls().n_unique()
-        if 0 < n_unique < _ENCODED_CATEGORY_MAX_UNIQUE:
+
+        if not series.dtype.is_integer():
+            return
+
+        valid_series = series.drop_nulls()
+        n_valid = valid_series.len()
+
+        if n_valid == 0:
+            return
+
+        n_unique = valid_series.n_unique()
+
+        min_val = valid_series.min()
+        max_val = valid_series.max()
+        range_span = (max_val - min_val) + 1
+
+        is_tight_sequence = range_span == n_unique
+
+        absolute_limit = 50 if is_tight_sequence else _ENCODED_CATEGORY_MAX_UNIQUE
+
+        absolute_ok = 0 < n_unique < absolute_limit
+        ratio_ok = (n_unique / n_valid) < _ENCODED_CATEGORY_MAX_RATIO
+
+        if (absolute_ok and ratio_ok) or (is_tight_sequence and absolute_ok):
             info.flags.append(TypeFlag.EncodedCategory)
 
     # ------------------------------------------------------------------
@@ -227,14 +267,28 @@ class TypeDetector:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _check_identifier(
-        series: pl.Series, info: ColumnTypeInfo, n_rows: int
-    ) -> None:
+    def _check_identifier(series: pl.Series, info: ColumnTypeInfo, n_rows: int) -> None:
         if n_rows == 0:
             return
+
         n_unique = series.n_unique()
-        if n_unique / n_rows > _IDENTIFIER_UNIQUE_RATIO:
-            info.flags.append(TypeFlag.IdentifierColumn)
+        if n_unique / n_rows <= _IDENTIFIER_UNIQUE_RATIO:
+            return
+
+        if series.dtype in (pl.Utf8, pl.String):
+            lengths = series.drop_nulls().str.len_chars()
+            if lengths.len() == 0:
+                return
+
+            median_length = lengths.median()
+
+            if (
+                median_length is not None
+                and median_length > _IDENTIFIER_MAX_MEDIAN_LENGTH
+            ):
+                return
+
+        info.flags.append(TypeFlag.IdentifierColumn)
 
     # ------------------------------------------------------------------
     # Step 6: Sequential index
@@ -247,21 +301,32 @@ class TypeDetector:
         if n_rows == 0 or TypeFlag.IdentifierColumn not in info.flags:
             # Only bother if already flagged as identifier
             return
-        try:
-            vals = series.drop_nulls().cast(pl.Int64)
-        except Exception:
+
+        is_float = series.dtype in (pl.Float32, pl.Float64)
+        is_int = series.dtype in _INT_DTYPES
+
+        if not (is_float or is_int):
             return
-        if vals.len() != n_rows:
-            return  # has nulls
 
-        min_val = vals.min()
-        max_val = vals.max()
-        expected_range_0 = list(range(0, n_rows))          # range(0, n)
-        expected_range_1 = list(range(1, n_rows + 1))      # range(1, n+1)
+        s_min = series.min()
+        s_max = series.max()
 
-        actual = vals.to_list()
-        if actual == expected_range_0 or actual == expected_range_1:
-            info.flags.append(TypeFlag.SequentialIndex)
+        if (s_min != 0 and s_max != n_rows - 1) or (s_min != 1 or s_max != n_rows):
+            return
+
+        if is_float:
+            series_int = series.cast(pl.Int64)
+            if not (series == series_int).all():
+                return
+            series_to_check = series_int
+        else:
+            series_to_check = series
+
+        if series_to_check.n_unique() == n_rows:
+            flag = (
+                TypeFlag.FloatSequentialIndex if is_float else TypeFlag.SequentialIndex
+            )
+            info.flags.append(flag)
 
     # ------------------------------------------------------------------
     # Step 7: Numeric kind

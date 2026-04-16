@@ -92,14 +92,13 @@ class NumericKind(StrEnum):
 
 
 class TypeFlag(StrEnum):
-    """Non-exclusive flags that can be attached to a column."""
-
+    NumericCoerced = "numeric_coerced"
+    DatetimeCoerced = "datetime_coerced"
     BooleanCandidate = "boolean_candidate"
-    EncodedCategory = "encoded_category"     # low-cardinality int
-    IdentifierColumn = "identifier_column"   # near-100 % unique
-    SequentialIndex = "sequential_index"     # range(0,n) or range(1,n+1)
-    NumericCoerced = "numeric_coerced"       # was object, successfully coerced
-    DatetimeCoerced = "datetime_coerced"     # was object, successfully coerced
+    EncodedCategory = "encoded_category"
+    IdentifierColumn = "identifier_column"
+    SequentialIndex = "sequential_index"
+    FloatSequentialIndex = "float_sequential_index"
 
 
 @dataclass
