@@ -57,26 +57,18 @@ from profiling.config import ProfileConfig
 # Module-level thresholds (documented so callers can see what drives flags)
 # ---------------------------------------------------------------------------
 
-_RARE_THRESHOLD_PCT: float = 0.01          # <1 % of rows → rare
-_DATETIME_SAMPLE_SIZE: int = 50            # rows sampled for datetime probe
-_DATETIME_PARSE_RATE: float = 0.70         # >70 % parsed → potential_datetime
-_FREE_TEXT_AVG_WORDS: int = 5              # avg word count threshold
-_FREE_TEXT_AVG_CHARS: int = 50            # avg char length threshold
-_FREE_TEXT_AVG_TOKENS: int = 10           # secondary: rough token count (chars/4)
-_ORDINAL_NAME_RE = re.compile(
-    r"(rank|level|tier|grade|priority|order|stage|step|score|rating|severity)",
-    re.IGNORECASE,
-)
-_ORDINAL_VALUE_RE = re.compile(
-    r"^(low|medium|high|very\s+high|very\s+low|critical|none|minor|major"
-    r"|small|large|first|second|third|fourth|fifth"
-    r"|\d+(?:st|nd|rd|th))$",
-    re.IGNORECASE,
-)
-
-# Numeric-looking pattern used in mixed-type detection.
-# Reusing this avoids per-value cast overhead for obviously non-numeric strings.
-_NUMERIC_RE = re.compile(r"^\s*[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?\s*$")
+_RARE_THRESHOLD_PCT: float = 0.01  # <1 % of rows → rare
+_DATETIME_SAMPLE_SIZE: int = 50  # rows sampled for datetime probe
+_DATETIME_PARSE_RATE: float = 0.70  # >70 % parsed → potential_datetime
+_FREE_TEXT_AVG_WORDS: int = 5  # avg word count threshold
+_FREE_TEXT_AVG_CHARS: int = 50  # avg char length threshold
+_FREE_TEXT_AVG_TOKENS: int = 10  # secondary: rough token count (chars/4)
+_MIXED_TYPE_MIN_MINOR_PCT: float = 0.05
+_MIXED_TYPE_Z_SCORE: float = 1.96
+_FREE_TEXT_MEDIAN_CHARS: int = 35
+_FREE_TEXT_MEDIAN_WORDS: int = 5
+_FREE_TEXT_P90_CHARS: int = 60
+_FREE_TEXT_MIN_UNIQUE_RATIO: float = 0.40
 
 
 class CategoricalProfiler(Profiling[CategoricalProfileResult]):
@@ -235,10 +227,9 @@ class CategoricalProfiler(Profiling[CategoricalProfileResult]):
         if clean.len() == 0:
             return pl.DataFrame({"value": [], "count": []})
 
-        vc = (
-            clean.value_counts(sort=True)  # sorted descending by count
-            .rename({"count": "count"})     # polars already names it "count"
-        )
+        vc = clean.value_counts(sort=True).rename(  # sorted descending by count
+            {"count": "count"}
+        )  # polars already names it "count"
         # Polars value_counts column name for the values is the series name
         value_col = series.name
 
@@ -261,13 +252,18 @@ class CategoricalProfiler(Profiling[CategoricalProfileResult]):
         profile.rare_categories = RareCategoryStats(
             threshold_pct=_RARE_THRESHOLD_PCT,
             rare_category_count=rare_rows.height,
-            total_rare_rows=int(rare_rows["count"].sum()) if rare_rows.height > 0 else 0,
+            total_rare_rows=(
+                int(rare_rows["count"].sum()) if rare_rows.height > 0 else 0
+            ),
         )
         profile.rare_categories.rare_row_percentage = (
             profile.rare_categories.total_rare_rows / n_rows if n_rows > 0 else 0.0
         )
 
         # --- Imbalance metrics ---
+        # Class Ratio -> raw distribution
+        # Entropy -> randomness / information content
+        # Gini -> impurity / misclassification risk
         counts = vc["count"].cast(pl.Float64)
         total = float(counts.sum())
         if total > 0:
@@ -288,39 +284,6 @@ class CategoricalProfiler(Profiling[CategoricalProfileResult]):
         return vc
 
     # ------------------------------------------------------------------
-    # Step 4: Ordinal vs nominal detection
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _detect_kind(
-        series: pl.Series,
-        col_name: str,
-        profile: CategoricalColumnProfile,
-    ) -> None:
-        """
-        Heuristic ordinal detection:
-          • Column name matches ordinal-name pattern, OR
-          • ≥60 % of unique non-null values match the ordinal-value pattern.
-        Everything else defaults to Nominal.
-        """
-        if _ORDINAL_NAME_RE.search(col_name):
-            profile.kind = CategoricalKind.Ordinal
-            return
-
-        unique_vals = series.drop_nulls().unique().to_list()
-        if not unique_vals:
-            profile.kind = CategoricalKind.Nominal
-            return
-
-        ordinal_hits = sum(
-            1 for v in unique_vals if _ORDINAL_VALUE_RE.match(str(v))
-        )
-        if ordinal_hits / len(unique_vals) >= 0.60:
-            profile.kind = CategoricalKind.Ordinal
-        else:
-            profile.kind = CategoricalKind.Nominal
-
-    # ------------------------------------------------------------------
     # Step 5: Mixed-type flag
     # ------------------------------------------------------------------
 
@@ -334,22 +297,35 @@ class CategoricalProfiler(Profiling[CategoricalProfileResult]):
         values.  We use a regex pre-filter so that the vast majority of
         clearly non-numeric strings are rejected cheaply, and we only
         apply the heavier float-cast check to ambiguous values.
-
-        Note: if TypeDetector already coerced this column to a numeric dtype,
-        the caller will have passed the *original* string series here, so
-        the check is still meaningful.
         """
+
         non_null = series.drop_nulls()
-        if non_null.len() == 0:
+        n_total = non_null.len()
+
+        if n_total == 0:
             return
 
-        # Vectorised regex test — faster than Python-level iteration
-        looks_numeric = non_null.str.contains(r"^\s*[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?\s*$")
-        n_numeric = int(looks_numeric.sum())
-        n_total = non_null.len()
+        numeric_cast = non_null.cast(pl.Float64, strict=False)
+
+        n_numeric = n_total - numeric_cast.null_count()
         n_non_numeric = n_total - n_numeric
 
-        if n_numeric > 0 and n_non_numeric > 0:
+        if n_numeric == 0 or n_non_numeric == 0:
+            return
+
+        n_minority = min(n_numeric, n_non_numeric)
+        p_minority = n_minority / n_total
+
+        z = _MIXED_TYPE_Z_SCORE
+        denominator = 1 + (z**2) / n_total
+        center = p_minority + (z**2) / (2 * n_total)
+        spread = z * math.sqrt(
+            (p_minority * (1 - p_minority) + (z**2) / (4 * n_total)) / n_total
+        )
+
+        lower_bound = (center - spread) / denominator
+
+        if lower_bound >= _MIXED_TYPE_MIN_MINOR_PCT:
             profile.flags.append(CategoricalFlag.MixedType)
 
     # ------------------------------------------------------------------
@@ -415,21 +391,21 @@ class CategoricalProfiler(Profiling[CategoricalProfileResult]):
 
         # Average character length
         char_lengths = non_null.str.len_chars()
-        avg_chars = float(char_lengths.mean() or 0.0)  # type: ignore[arg-type]
 
-        if avg_chars > _FREE_TEXT_AVG_CHARS:
+        median_chars = float(char_lengths.median() or 0.0)
+        if median_chars > _FREE_TEXT_MEDIAN_CHARS:
             profile.flags.append(CategoricalFlag.FreeText)
             return
+        
+        space_counts = non_null.str.count_matches(r"\s+")
+        median_words = float(space_counts.median() or 0.0) + 1.0
 
-        # Average word count — split on whitespace sequences
-        word_counts = non_null.str.split(" ").list.len()
-        avg_words = float(word_counts.mean() or 0.0)  # type: ignore[arg-type]
-
-        if avg_words > _FREE_TEXT_AVG_WORDS:
+        if median_words > _FREE_TEXT_AVG_WORDS:
             profile.flags.append(CategoricalFlag.FreeText)
             return
+        
+        p90_chars = float(char_lengths.quantile(0.9) or 0.0)
 
-        # Secondary threshold: rough token count (chars / 4)
-        avg_tokens = avg_chars / 4.0
-        if avg_tokens > _FREE_TEXT_AVG_TOKENS:
+        if p90_chars > _FREE_TEXT_P90_CHARS and profile.unique_ratio > _FREE_TEXT_MIN_UNIQUE_RATIO:
             profile.flags.append(CategoricalFlag.FreeText)
+            return
