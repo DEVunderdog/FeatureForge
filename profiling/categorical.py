@@ -150,12 +150,9 @@ class CategoricalProfiler(Profiling[CategoricalProfileResult]):
         # 1. Cardinality
         self._compute_cardinality(str_series, profile, n_rows)
 
-        # 2. Missingness (nulls + whitespace)
-        self._compute_missingness(str_series, profile)
-
         # 3. Value distribution (top-5, rare categories, imbalance)
         #    Returns the value-count frame for reuse in later steps.
-        vc_frame = self._compute_value_distribution(str_series, profile, n_rows)
+        self._compute_value_distribution(str_series, profile, n_rows)
 
         # 4. Ordinal vs nominal detection
         self._detect_kind(str_series, col_name, profile)
@@ -222,7 +219,11 @@ class CategoricalProfiler(Profiling[CategoricalProfileResult]):
         Returns the full value-count DataFrame for possible reuse.
         """
         # Exclude nulls and whitespace-only values from distribution stats
-        clean = series.drop_nulls().filter(series.drop_nulls().str.strip_chars() != "")
+        clean = series.filter(
+            ~series.is_null() & 
+            (series.str.strip_chars() != "") & 
+            ~series.str.to_uppercase().is_in(["NA", "NAN", "NULL", "NONE", "?"])
+        )
 
         if clean.len() == 0:
             return pl.DataFrame({"value": [], "count": []})

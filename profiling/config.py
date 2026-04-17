@@ -105,7 +105,6 @@ class TypeFlag(StrEnum):
 class ColumnTypeInfo:
     """
     Type-detection result for a single column.
-
     Attributes
     ----------
     column : str
@@ -128,6 +127,12 @@ class ColumnTypeInfo:
 
     def has_flag(self, flag: TypeFlag) -> bool:
         return flag in self.flags
+    
+@dataclass
+class ColumnMissingness:
+    standard_nulls: int = 0
+    effective_nulls: int = 0
+    effective_null_ration: float = 0.0
 
 
 @dataclass
@@ -151,8 +156,10 @@ class TabularProfileResult:
     duplicate_row_count: int = 0
     duplicate_ratio: float = 0.0  # duplicate_row_count / row_count
 
+    missingness: dict[str, ColumnMissingness] = field(default_factory=dict)
+
     # Sparsity  (scoped to sparsity_columns)
-    overall_sparsity: float = 0.0  # fraction of cells that are NaN/None
+    overall_effective_sparsity: float = 0.0  # fraction of cells that are NaN/None
 
     # Type detection  (scoped to type_detection_columns; empty if not opted-in)
     column_type_info: dict[str, ColumnTypeInfo] = field(default_factory=dict)
@@ -174,7 +181,7 @@ class TabularProfileResult:
             f"  Memory             : {self.total_memory_mb:.2f} MB"
             + (" [EXCEEDED THRESHOLD]" if self.memory_exceeded_threshold else ""),
             f"  Duplicate rows     : {self.duplicate_row_count:,} ({self.duplicate_ratio:.2%})",
-            f"  Overall sparsity   : {self.overall_sparsity:.4%}",
+            f"  Overall sparsity   : {self.overall_effective_sparsity:.4%}",
             f"  Chunked processing : {self.was_chunked}",
         ]
         if self.memory_breakdown:

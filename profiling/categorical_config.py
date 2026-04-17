@@ -87,12 +87,6 @@ class CategoricalColumnProfile:
         cardinality / total_rows.
     kind : Optional[CategoricalKind]
         Ordinal or Nominal — None when detection is inconclusive.
-    null_count : int
-        True NaN/None values.
-    whitespace_count : int
-        Values where str.strip() == "" (not NaN but missing-like).
-    effective_missing_count : int
-        null_count + whitespace_count — the count to use downstream.
     top_values : list[TopValueEntry]
         Up to 5 most-frequent values with counts and percentages.
     rare_categories : RareCategoryStats
@@ -112,11 +106,6 @@ class CategoricalColumnProfile:
 
     # Semantic kind
     kind: Optional[CategoricalKind] = None
-
-    # Missingness
-    null_count: int = 0
-    whitespace_count: int = 0
-    effective_missing_count: int = 0
 
     # Value distribution
     top_values: list[TopValueEntry] = field(default_factory=list)
