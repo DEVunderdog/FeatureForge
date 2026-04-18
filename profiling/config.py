@@ -45,6 +45,7 @@ class ProfileConfig:
     categorical_columns: Optional[list[str]] = None
     sparsity_columns: Optional[list[str]] = None
     type_detection_columns: Optional[list[str]] = None  # opt-in per-column
+    numeric_columns: Optional[list[str]] = None
     memory_threshold_mb: float = 500.0
     chunk_size: int = 100_000
 

@@ -4,6 +4,7 @@ StructuralProfiler  –  unified Phase 1 entry point.
 Orchestrates TabularProfiler and (optionally) CategoricalProfiler,
 returning a single StructuralProfileResult that contains both.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -15,18 +16,24 @@ from profiling.tabular import TabularProfiler
 from profiling.categorical import CategoricalProfiler
 from profiling.config import ProfileConfig, TabularProfileResult
 from profiling.categorical_config import CategoricalProfileResult
+from profiling.numeric_config import NumericProfileResult
+from profiling.numeric_profiler import NumericProfiler
 
 
 @dataclass
 class StructuralProfileResult:
     """Combined result from both profilers."""
+
     tabular: TabularProfileResult = field(default_factory=TabularProfileResult)
     categorical: Optional[CategoricalProfileResult] = None
+    numeric: Optional[NumericProfileResult] = None
 
     def __str__(self) -> str:
         lines = [str(self.tabular)]
         if self.categorical:
             lines.append(str(self.categorical))
+        if self.numeric:
+            lines.append(str(self.numeric))
         return "\n\n".join(lines)
 
 
@@ -70,5 +77,11 @@ class StructuralProfiler:
                 config=self.config,
             )
             result.categorical = cat_profiler.profile(data)
+
+        if self.config.numeric_columns is not None:
+            result.numeric = NumericProfiler(
+                columns=self.config.numeric_columns,
+                config=self.config,
+            ).profile(data=data)
 
         return result
