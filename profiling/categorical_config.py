@@ -23,7 +23,6 @@ class CategoricalKind(StrEnum):
 
 class CategoricalFlag(StrEnum):
     MixedType = "mixed_type"
-    PotentialDatetime = "potential_datetime"
     FreeText = "free_text"
 
 

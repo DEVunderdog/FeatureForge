@@ -42,6 +42,7 @@ class ProfileConfig:
 
     columns: Optional[list[str]] = None
     duplicate_columns: Optional[list[str]] = None
+    categorical_columns: Optional[list[str]] = None
     sparsity_columns: Optional[list[str]] = None
     type_detection_columns: Optional[list[str]] = None  # opt-in per-column
     memory_threshold_mb: float = 500.0
@@ -132,7 +133,7 @@ class ColumnTypeInfo:
 class ColumnMissingness:
     standard_nulls: int = 0
     effective_nulls: int = 0
-    effective_null_ration: float = 0.0
+    effective_null_ratio: float = 0.0
 
 
 @dataclass

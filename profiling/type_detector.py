@@ -35,11 +35,7 @@ _IDENTIFIER_UNIQUE_RATIO = 0.99  # >99 % unique → identifier
 _IDENTIFIER_MAX_MEDIAN_LENGTH = 40
 _DISCRETE_NUNIQUE_THRESHOLD = 20  # numeric with <20 unique values → discrete
 
-# Column-name patterns that suggest datetime content
-_DATE_NAME_RE = re.compile(
-    r"(date|time|dt|year|month|timestamp|created|updated|at$|_on$)",
-    re.IGNORECASE,
-)
+
 
 # Common boolean string values (lowercased)
 _BOOL_STRING_SET = {"true", "false", "yes", "no", "t", "f", "0", "1"}
@@ -194,8 +190,7 @@ class TypeDetector:
         """
         if n_rows == 0:
             return None, None
-        if not _DATE_NAME_RE.search(col_name):
-            return None, None
+        
         try:
             cast = series.str.to_datetime(strict=False)
         except Exception:

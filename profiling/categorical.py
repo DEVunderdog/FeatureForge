@@ -8,10 +8,9 @@ Per-column metrics (opt-in via ProfileConfig.categorical_columns):
   4. Rare category analysis          (<1 % frequency threshold)
   5. Whitespace-only value count
   6. Mixed-type flag                 (some values numeric, some not)
-  7. Potential-datetime flag         (50-sample probe, >70 % parse rate)
-  8. Free-text / natural-language flag
+  7. Free-text / natural-language flag
         (avg word count >5 OR avg char length >50 OR avg token count >10)
-  9. Imbalance metrics
+  8. Imbalance metrics
         – class ratio  (max_freq / min_freq)
         – Shannon entropy
         – Gini impurity
@@ -45,7 +44,6 @@ from profiling.base import Profiling
 from profiling.categorical_config import (
     CategoricalColumnProfile,
     CategoricalFlag,
-    CategoricalKind,
     CategoricalProfileResult,
     ImbalanceMetrics,
     RareCategoryStats,
@@ -58,15 +56,10 @@ from profiling.config import ProfileConfig
 # ---------------------------------------------------------------------------
 
 _RARE_THRESHOLD_PCT: float = 0.01  # <1 % of rows → rare
-_DATETIME_SAMPLE_SIZE: int = 50  # rows sampled for datetime probe
-_DATETIME_PARSE_RATE: float = 0.70  # >70 % parsed → potential_datetime
 _FREE_TEXT_AVG_WORDS: int = 5  # avg word count threshold
-_FREE_TEXT_AVG_CHARS: int = 50  # avg char length threshold
-_FREE_TEXT_AVG_TOKENS: int = 10  # secondary: rough token count (chars/4)
 _MIXED_TYPE_MIN_MINOR_PCT: float = 0.05
 _MIXED_TYPE_Z_SCORE: float = 1.96
 _FREE_TEXT_MEDIAN_CHARS: int = 35
-_FREE_TEXT_MEDIAN_WORDS: int = 5
 _FREE_TEXT_P90_CHARS: int = 60
 _FREE_TEXT_MIN_UNIQUE_RATIO: float = 0.40
 
@@ -162,10 +155,6 @@ class CategoricalProfiler(Profiling[CategoricalProfileResult]):
         #    coerced; here we detect columns that are *partly* numeric and
         #    partly not — a different (and more expensive) check.
         self._check_mixed_type(str_series, profile)
-
-        # 6. Potential-datetime flag (only for non-datetime-named columns —
-        #    TypeDetector already handles name-hinted columns)
-        self._check_potential_datetime(str_series, col_name, profile, n_rows)
 
         # 7. Free-text / natural-language flag
         self._check_free_text(str_series, profile, n_rows)
@@ -328,44 +317,6 @@ class CategoricalProfiler(Profiling[CategoricalProfileResult]):
 
         if lower_bound >= _MIXED_TYPE_MIN_MINOR_PCT:
             profile.flags.append(CategoricalFlag.MixedType)
-
-    # ------------------------------------------------------------------
-    # Step 6: Potential-datetime flag
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _check_potential_datetime(
-        series: pl.Series,
-        col_name: str,
-        profile: CategoricalColumnProfile,
-        n_rows: int,
-    ) -> None:
-        """
-        Probe up to 50 non-null values with str.to_datetime(strict=False).
-        If >70 % parse successfully, flag as PotentialDatetime.
-
-        Skip columns already flagged MixedType (unreliable parse rates)
-        or columns whose names already triggered TypeDetector's datetime
-        coercion path (redundant check).
-        """
-        if CategoricalFlag.MixedType in profile.flags:
-            return
-
-        non_null = series.drop_nulls()
-        if non_null.len() == 0:
-            return
-
-        sample_size = min(_DATETIME_SAMPLE_SIZE, non_null.len())
-        sample = non_null.head(sample_size)
-
-        try:
-            parsed = sample.str.to_datetime(strict=False)
-        except Exception:
-            return
-
-        parse_rate = parsed.drop_nulls().len() / sample_size
-        if parse_rate > _DATETIME_PARSE_RATE:
-            profile.flags.append(CategoricalFlag.PotentialDatetime)
 
     # ------------------------------------------------------------------
     # Step 7: Free-text / natural-language flag
