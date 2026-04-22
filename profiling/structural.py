@@ -18,6 +18,8 @@ from profiling.config import ProfileConfig, TabularProfileResult
 from profiling.categorical_config import CategoricalProfileResult
 from profiling.numeric_config import NumericProfileResult
 from profiling.numeric_profiler import NumericProfiler
+from profiling.missingness_profiler import MissingnessProfiler
+from profiling.missingness_config import MissingnessProfileResult
 
 
 @dataclass
@@ -27,9 +29,12 @@ class StructuralProfileResult:
     tabular: TabularProfileResult = field(default_factory=TabularProfileResult)
     categorical: Optional[CategoricalProfileResult] = None
     numeric: Optional[NumericProfileResult] = None
+    missingness: Optional[MissingnessProfileResult] = None
 
     def __str__(self) -> str:
         lines = [str(self.tabular)]
+        if self.missingness:
+            lines.append(str(self.missingness))
         if self.categorical:
             lines.append(str(self.categorical))
         if self.numeric:
@@ -57,6 +62,7 @@ class StructuralProfiler:
     def __init__(self, config: ProfileConfig | None = None) -> None:
         self.config = config or ProfileConfig()
         self._tabular = TabularProfiler(config=self.config)
+        self._missingness = MissingnessProfiler(config=self.config)
 
     def profile(self, data: Any) -> StructuralProfileResult:
         if not isinstance(data, pl.DataFrame):
@@ -69,6 +75,11 @@ class StructuralProfiler:
 
         # Always run structural profiling
         result.tabular = self._tabular.profile(data)
+
+        result.missingness = self._missingness.profile(
+            data,
+            columns=result.tabular.analysed_columns or None,
+        )
 
         # Run categorical profiling only when opted in
         if self.config.categorical_columns is not None:
