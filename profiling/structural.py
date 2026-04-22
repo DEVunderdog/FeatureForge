@@ -20,6 +20,8 @@ from profiling.numeric_config import NumericProfileResult
 from profiling.numeric_profiler import NumericProfiler
 from profiling.missingness_profiler import MissingnessProfiler
 from profiling.missingness_config import MissingnessProfileResult
+from profiling.target_config import TargetProfileResult
+from profiling.target_profiler import TargetProfiler
 
 
 @dataclass
@@ -30,6 +32,7 @@ class StructuralProfileResult:
     categorical: Optional[CategoricalProfileResult] = None
     numeric: Optional[NumericProfileResult] = None
     missingness: Optional[MissingnessProfileResult] = None
+    target: Optional[TargetProfileResult] = None
 
     def __str__(self) -> str:
         lines = [str(self.tabular)]
@@ -39,6 +42,9 @@ class StructuralProfileResult:
             lines.append(str(self.categorical))
         if self.numeric:
             lines.append(str(self.numeric))
+        if self.target:
+            lines.append(str(self.target))
+
         return "\n\n".join(lines)
 
 
@@ -94,5 +100,12 @@ class StructuralProfiler:
                 columns=self.config.numeric_columns,
                 config=self.config,
             ).profile(data=data)
+
+        if self.config.target_columns is not None:
+            target_profiler = TargetProfiler(
+                target_column=self.config.target_columns,
+                config=self.config,
+            )
+            result.target = target_profiler.profile(data)
 
         return result

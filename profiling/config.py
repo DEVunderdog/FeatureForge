@@ -40,6 +40,7 @@ class ProfileConfig:
         Number of rows per chunk when chunked processing is active.
     """
 
+    target_columns: Optional[str] = None
     columns: Optional[list[str]] = None
     duplicate_columns: Optional[list[str]] = None
     categorical_columns: Optional[list[str]] = None
@@ -129,7 +130,8 @@ class ColumnTypeInfo:
 
     def has_flag(self, flag: TypeFlag) -> bool:
         return flag in self.flags
-    
+
+
 @dataclass
 class ColumnMissingness:
     standard_nulls: int = 0
