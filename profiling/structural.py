@@ -22,6 +22,8 @@ from profiling.missingness_profiler import MissingnessProfiler
 from profiling.missingness_config import MissingnessProfileResult
 from profiling.target_config import TargetProfileResult
 from profiling.target_profiler import TargetProfiler
+from profiling.correlation_profiler import CorrelationProfiler
+from profiling.correlation_config import CorrelationProfileResult
 
 
 @dataclass
@@ -33,6 +35,7 @@ class StructuralProfileResult:
     numeric: Optional[NumericProfileResult] = None
     missingness: Optional[MissingnessProfileResult] = None
     target: Optional[TargetProfileResult] = None
+    correlation: Optional[CorrelationProfileResult] = None
 
     def __str__(self) -> str:
         lines = [str(self.tabular)]
@@ -101,11 +104,22 @@ class StructuralProfiler:
                 config=self.config,
             ).profile(data=data)
 
+            cor_profiler = CorrelationProfiler(config=self.config)
+            result.correlation = cor_profiler.profile(data)
+
         if self.config.target_columns is not None:
             target_profiler = TargetProfiler(
                 target_column=self.config.target_columns,
                 config=self.config,
             )
             result.target = target_profiler.profile(data)
+
+        if self.config.compute_correlation or self.config.correlation_target_column:
+            result.correlation = CorrelationProfiler(
+                numeric_columns=result.tabular.analysed_columns,
+                categorical_columns=self.config.categorical_columns or [],
+                target_column=self.config.correlation_target_column,
+                config=self.config,
+            ).profile(data)
 
         return result

@@ -31,7 +31,6 @@ Attach ``num_result`` to ``TabularProfileResult`` as
 
 from __future__ import annotations
 
-import math
 import warnings
 from typing import Any
 

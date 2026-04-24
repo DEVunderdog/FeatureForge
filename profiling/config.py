@@ -49,6 +49,8 @@ class ProfileConfig:
     numeric_columns: Optional[list[str]] = None
     memory_threshold_mb: float = 500.0
     chunk_size: int = 100_000
+    correlation_target_column: Optional[str] = None
+    compute_correlation: bool = False
 
     def resolve_duplicate_columns(self) -> Optional[list[str]]:
         """Return the effective column list for duplicate detection."""
