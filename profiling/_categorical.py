@@ -37,9 +37,9 @@ import math
 from typing import Any
 
 import polars as pl
-from models.data_structure import DataStructure
-from profiling.base import Profiling
-from profiling.categorical_config import (
+from ..models._data_structure import DataStructure
+from ._base import Profiling
+from ._categorical_config import (
     CategoricalColumnProfile,
     CategoricalFlag,
     CategoricalProfileResult,
@@ -47,7 +47,7 @@ from profiling.categorical_config import (
     RareCategoryStats,
     TopValueEntry,
 )
-from profiling.config import ProfileConfig
+from .config import ProfileConfig
 
 
 # ---------------------------------------------------------------------------

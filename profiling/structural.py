@@ -12,18 +12,18 @@ from typing import Any, Optional
 
 import polars as pl
 
-from profiling.tabular import TabularProfiler
-from profiling.categorical import CategoricalProfiler
-from profiling.config import ProfileConfig, TabularProfileResult
-from profiling.categorical_config import CategoricalProfileResult
-from profiling.numeric_config import NumericProfileResult
-from profiling.numeric_profiler import NumericProfiler
-from profiling.missingness_profiler import MissingnessProfiler
-from profiling.missingness_config import MissingnessProfileResult
-from profiling.target_config import TargetProfileResult
-from profiling.target_profiler import TargetProfiler
-from profiling.correlation_profiler import CorrelationProfiler
-from profiling.correlation_config import CorrelationProfileResult
+from ._tabular import TabularProfiler
+from ._categorical import CategoricalProfiler
+from .config import ProfileConfig, TabularProfileResult
+from ._categorical_config import CategoricalProfileResult
+from ._numeric_config import NumericProfileResult
+from ._numeric_profiler import NumericProfiler
+from ._missingness_profiler import MissingnessProfiler
+from ._missingness_config import MissingnessProfileResult
+from ._target_config import TargetProfileResult
+from ._target_profiler import TargetProfiler
+from ._correlation_profiler import CorrelationProfiler
+from ._correlation_config import CorrelationProfileResult
 
 
 @dataclass

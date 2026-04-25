@@ -22,15 +22,15 @@ from typing import Any
 
 import polars as pl
 
-from models.data_structure import DataStructure
-from profiling.base import Profiling
-from profiling.config import (
+from ..models._data_structure import DataStructure
+from ._base import Profiling
+from .config import (
     MemoryBreakdown,
     ProfileConfig,
     TabularProfileResult,
     ColumnMissingness,
 )
-from profiling.type_detector import TypeDetector
+from ._type_detector import TypeDetector
 
 
 class TabularProfiler(Profiling[TabularProfileResult]):

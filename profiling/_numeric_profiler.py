@@ -36,11 +36,11 @@ from typing import Any
 
 import polars as pl
 
-from models.data_structure import DataStructure
-from profiling.base import Profiling
-from profiling.config import ProfileConfig
-from profiling.correlation_profiler import _INT_DTYPES
-from profiling.numeric_config import (
+from ..models._data_structure import DataStructure
+from ._base import Profiling
+from .config import ProfileConfig
+from ._correlation_profiler import _INT_DTYPES
+from ._numeric_config import (
     ColumnNumericProfile,
     KurtosisTag,
     NumericFlag,

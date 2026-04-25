@@ -48,9 +48,9 @@ from typing import Any, Optional
 
 import polars as pl
 
-from profiling.base import Profiling
-from profiling.config import ProfileConfig
-from profiling.correlation_config import (
+from ._base import Profiling
+from .config import ProfileConfig
+from ._correlation_config import (
     CategoricalTargetCorrelation,
     CorrelationPair,
     CorrelationProfileResult,
@@ -59,7 +59,7 @@ from profiling.correlation_config import (
     NumericTargetCorrelation,
     TargetType,
 )
-from models.data_structure import DataStructure
+from ..models._data_structure import DataStructure
 
 # ---------------------------------------------------------------------------
 # Constants

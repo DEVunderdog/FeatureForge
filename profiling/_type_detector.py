@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 
 import polars as pl
 
-from profiling.config import ColumnTypeInfo, NumericKind, TypeFlag
+from .config import ColumnTypeInfo, NumericKind, TypeFlag
 
 if TYPE_CHECKING:
     pass

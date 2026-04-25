@@ -10,8 +10,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Optional
 
-from profiling.categorical_config import CategoricalColumnProfile
-from profiling.numeric_config import ColumnNumericProfile
+from ._categorical_config import CategoricalColumnProfile
+from ._numeric_config import ColumnNumericProfile
 
 class TargetProblemType(StrEnum):
     Regression = "regression"

@@ -44,10 +44,10 @@ from typing import Any
 
 import polars as pl
 
-from models.data_structure import DataStructure
-from profiling.base import Profiling
-from profiling.config import ProfileConfig
-from profiling.datetime_config import (
+from ..models._data_structure import DataStructure
+from ._base import Profiling
+from .config import ProfileConfig
+from ._datetime_config import (
     ColumnDatetimeProfile,
     DatetimeFlag,
     DatetimeProfileResult,

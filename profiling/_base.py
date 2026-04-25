@@ -10,8 +10,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any, Generic, TypeVar
 
-from models.data_structure import DataStructure
-from profiling.config import ProfileConfig
+from ..models._data_structure import DataStructure
+from .config import ProfileConfig
 
 R = TypeVar("R")
 

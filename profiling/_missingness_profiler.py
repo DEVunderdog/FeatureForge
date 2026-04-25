@@ -41,10 +41,10 @@ from typing import Any
 
 import polars as pl
 
-from models.data_structure import DataStructure
-from profiling.base import Profiling
-from profiling.config import ProfileConfig
-from profiling.missingness_config import (
+from ..models._data_structure import DataStructure
+from ._base import Profiling
+from .config import ProfileConfig
+from ._missingness_config import (
     ColumnMissingnessProfile,
     MissingnessFlag,
     MissingnessProfileResult,

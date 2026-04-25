@@ -14,21 +14,21 @@ from typing import Any
 
 import polars as pl
 
-from models.data_structure import DataStructure
-from profiling.base import Profiling
-from profiling.config import ProfileConfig
-from profiling.target_config import (
+from ..models._data_structure import DataStructure
+from ._base import Profiling
+from .config import ProfileConfig
+from ._target_config import (
     TargetFlag,
     TargetProblemType,
     TargetProfileResult,
 )
 
 # Reuse your internal profilers to prevent duplication
-from profiling.type_detector import TypeDetector, TypeFlag, NumericKind
-from profiling.missingness_profiler import MissingnessProfiler
-from profiling.categorical import CategoricalProfiler
-from profiling.numeric_profiler import NumericProfiler
-from profiling.numeric_config import SkewSeverity
+from ._type_detector import TypeDetector, TypeFlag, NumericKind
+from ._missingness_profiler import MissingnessProfiler
+from ._categorical import CategoricalProfiler
+from ._numeric_profiler import NumericProfiler
+from ._numeric_config import SkewSeverity
 
 
 class TargetProfiler(Profiling[TargetProfileResult]):
