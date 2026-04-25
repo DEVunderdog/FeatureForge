@@ -34,11 +34,9 @@ however suits your downstream pipeline.
 from __future__ import annotations
 
 import math
-import re
 from typing import Any
 
 import polars as pl
-
 from models.data_structure import DataStructure
 from profiling.base import Profiling
 from profiling.categorical_config import (
@@ -50,6 +48,7 @@ from profiling.categorical_config import (
     TopValueEntry,
 )
 from profiling.config import ProfileConfig
+
 
 # ---------------------------------------------------------------------------
 # Module-level thresholds (documented so callers can see what drives flags)
@@ -63,6 +62,7 @@ _FREE_TEXT_MEDIAN_CHARS: int = 35
 _FREE_TEXT_P90_CHARS: int = 60
 _FREE_TEXT_MIN_UNIQUE_RATIO: float = 0.40
 
+_NEAR_CONSTANT_THRESHOLD: float = 0.90
 
 class CategoricalProfiler(Profiling[CategoricalProfileResult]):
     """
@@ -223,16 +223,21 @@ class CategoricalProfiler(Profiling[CategoricalProfileResult]):
         # Polars value_counts column name for the values is the series name
         value_col = series.name
 
-        # --- Top-5 ---
-        top5_rows = min(5, vc.height)
+        # --- Top-10 ---
+        top10_rows = min(10, vc.height)
         profile.top_values = [
             TopValueEntry(
                 value=vc[value_col][i],
                 count=int(vc["count"][i]),
                 percentage=int(vc["count"][i]) / n_rows if n_rows > 0 else 0.0,
             )
-            for i in range(top5_rows)
+            for i in range(top10_rows)
         ]
+
+        profile.mode_frequency = profile.top_values[0].percentage
+        if profile.mode_frequency > _NEAR_CONSTANT_THRESHOLD:
+            profile.flags.append(CategoricalFlag.NearConstant)
+        
 
         # --- Rare category analysis ---
         rare_threshold_abs = max(1, math.floor(_RARE_THRESHOLD_PCT * n_rows))

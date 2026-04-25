@@ -4,6 +4,7 @@ Result dataclasses for categorical column profiling.
 These complement TabularProfileResult and are populated by
 CategoricalProfiler, which is opt-in via ProfileConfig.categorical_columns.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -24,6 +25,7 @@ class CategoricalKind(StrEnum):
 class CategoricalFlag(StrEnum):
     MixedType = "mixed_type"
     FreeText = "free_text"
+    NearConstant = "near_constant"
 
 
 # ---------------------------------------------------------------------------
@@ -49,9 +51,9 @@ class RareCategoryStats:
     """
 
     threshold_pct: float  # always 0.01
-    rare_category_count: int = 0       # distinct categories below threshold
-    total_rare_rows: int = 0           # rows belonging to rare categories
-    rare_row_percentage: float = 0.0   # total_rare_rows / row_count
+    rare_category_count: int = 0  # distinct categories below threshold
+    total_rare_rows: int = 0  # rows belonging to rare categories
+    rare_row_percentage: float = 0.0  # total_rare_rows / row_count
 
 
 @dataclass
@@ -103,9 +105,10 @@ class CategoricalColumnProfile:
     cardinality: int = 0
     unique_ratio: float = 0.0
 
+    mode_frequency: float = 0.0
+
     # Semantic kind
     kind: Optional[CategoricalKind] = None
-
     # Value distribution
     top_values: list[TopValueEntry] = field(default_factory=list)
     rare_categories: RareCategoryStats = field(

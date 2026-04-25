@@ -4,6 +4,7 @@ Result dataclasses for numeric distribution profiling.
 Populated by NumericProfiler, which is opt-in via
 ProfileConfig.numeric_columns.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -15,26 +16,43 @@ from typing import Optional
 # Enums
 # ---------------------------------------------------------------------------
 
+
 class SkewSeverity(StrEnum):
-    Normal   = "normal"    # |skew| <= 0.5
+    Normal = "normal"  # |skew| <= 0.5
     Moderate = "moderate"  # 0.5 < |skew| <= 1.0
-    High     = "high"      # 1.0 < |skew| <= 2.0
-    Severe   = "severe"    # |skew| > 2.0
+    High = "high"  # 1.0 < |skew| <= 2.0
+    Severe = "severe"  # |skew| > 2.0
 
 
 class KurtosisTag(StrEnum):
-    Platykurtic  = "platykurtic"   # excess kurtosis < -1  (thin tails)
-    Mesokurtic   = "mesokurtic"    # -1 <= excess <= 3     (near-normal)
-    Leptokurtic  = "leptokurtic"   # excess kurtosis > 3   (heavy tails)
+    Platykurtic = "platykurtic"  # excess kurtosis < -1  (thin tails)
+    Mesokurtic = "mesokurtic"  # -1 <= excess <= 3     (near-normal)
+    Leptokurtic = "leptokurtic"  # excess kurtosis > 3   (heavy tails)
 
 
 class NumericFlag(StrEnum):
-    ScaleAnomaly = "scale_anomaly"   # values span 3+ orders of magnitude
+    ScaleAnomaly = "scale_anomaly"  # values span 3+ orders of magnitude
+    NearConstant = "near_constant"
 
+
+@dataclass
+class HistogramBin:
+    lower_bound: float
+    upper_bound: float
+    count: int
+    percentage: float
+
+
+@dataclass
+class NumericTopValueEntry:
+    value: float
+    count: int
+    percentage: float
 
 # ---------------------------------------------------------------------------
 # Per-column result
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class PercentileProfile:
@@ -43,11 +61,12 @@ class PercentileProfile:
 
     All values are floats; None when the column has no non-null rows.
     """
-    p1:  Optional[float] = None
-    p5:  Optional[float] = None
-    p25: Optional[float] = None   # Q1
-    p50: Optional[float] = None   # median
-    p75: Optional[float] = None   # Q3
+
+    p1: Optional[float] = None
+    p5: Optional[float] = None
+    p25: Optional[float] = None  # Q1
+    p50: Optional[float] = None  # median
+    p75: Optional[float] = None  # Q3
     p95: Optional[float] = None
     p99: Optional[float] = None
 
@@ -118,19 +137,24 @@ class ColumnNumericProfile:
     non_null_count: int = 0
 
     # Central tendency
-    mean:               Optional[float] = None
-    median:             Optional[float] = None
-    mean_median_ratio:  Optional[float] = None
+    mean: Optional[float] = None
+    median: Optional[float] = None
+    mean_median_ratio: Optional[float] = None
+
+    mode: Optional[float] = None
+    mode_frequency: float = 0.0
+    top_values: list[NumericTopValueEntry] = field(default_factory=list)
+    histogram: list[HistogramBin] = field(default_factory=list)
 
     # Spread
-    std:      Optional[float] = None
+    std: Optional[float] = None
     variance: Optional[float] = None
 
     # Shape
-    skewness:      Optional[float] = None
-    kurtosis:      Optional[float] = None   # excess kurtosis
+    skewness: Optional[float] = None
+    kurtosis: Optional[float] = None  # excess kurtosis
     skew_severity: Optional[SkewSeverity] = None
-    kurtosis_tag:  Optional[KurtosisTag]  = None
+    kurtosis_tag: Optional[KurtosisTag] = None
 
     # Range
     min: Optional[float] = None
@@ -181,6 +205,7 @@ class ColumnNumericProfile:
 # ---------------------------------------------------------------------------
 # Top-level result
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class NumericProfileResult:

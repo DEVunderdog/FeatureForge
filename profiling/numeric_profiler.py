@@ -39,6 +39,7 @@ import polars as pl
 from models.data_structure import DataStructure
 from profiling.base import Profiling
 from profiling.config import ProfileConfig
+from profiling.correlation_profiler import _INT_DTYPES
 from profiling.numeric_config import (
     ColumnNumericProfile,
     KurtosisTag,
@@ -46,6 +47,8 @@ from profiling.numeric_config import (
     NumericProfileResult,
     PercentileProfile,
     SkewSeverity,
+    NumericTopValueEntry,
+    HistogramBin,
 )
 
 # ---------------------------------------------------------------------------
@@ -75,6 +78,8 @@ _PROFILED_DTYPES = {
 
 # Percentile quantile levels (in order)
 _QUANTILE_LEVELS = (0.01, 0.05, 0.25, 0.50, 0.75, 0.95, 0.99)
+_NEAR_CONSTANT_THRESHOLD = 0.90
+_DISCRETE_MAX_UNIQUE = 20
 
 
 class NumericProfiler(Profiling[NumericProfileResult]):
@@ -144,6 +149,99 @@ class NumericProfiler(Profiling[NumericProfileResult]):
     # Per-column driver
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _compute_frequency_and_distribution(
+        original_series: pl.Series,
+        clean_f64: pl.Series,
+        profile: ColumnNumericProfile,
+        n_rows: int,
+    ) -> None:
+        """
+        Compute Mode, and depending on whether the feature is continuous or discrete, 
+        calculate a 20-bin histogram OR Top-10 value counts.
+        """
+        if clean_f64.len() == 0:
+            return
+
+        vc = clean_f64.value_counts(sort=True)
+        col_name = clean_f64.name
+
+        # --- Absolute Mode Frequency ---
+        mode_val = float(vc[col_name][0])
+        mode_count = int(vc["count"][0])
+        mode_freq = mode_count / n_rows if n_rows > 0 else 0.0
+
+        profile.mode = mode_val
+        profile.mode_frequency = mode_freq
+
+        if mode_freq > _NEAR_CONSTANT_THRESHOLD:
+            profile.flags.append(NumericFlag.NearConstant)
+
+        n_unique = vc.height
+        is_discrete = original_series.dtype in _INT_DTYPES or n_unique <= _DISCRETE_MAX_UNIQUE
+
+        if is_discrete:
+            # --- Top-10 Distribution (Discrete) ---
+            top_rows = min(10, n_unique)
+            profile.top_values =[
+                NumericTopValueEntry(
+                    value=float(vc[col_name][i]),
+                    count=int(vc["count"][i]),
+                    percentage=int(vc["count"][i]) / n_rows if n_rows > 0 else 0.0
+                )
+                for i in range(top_rows)
+            ]
+        else:
+            # --- 20-Bin Histogram Distribution (Continuous) ---
+            col_min = profile.min
+            col_max = profile.max
+
+            if col_min is not None and col_max is not None and col_max > col_min:
+                span = col_max - col_min
+                
+                # Robust math-based binning to avoid Polars API version mismatches
+                bin_expr = ((pl.col(col_name) - col_min) / span * 20).floor().cast(pl.Int64)
+                bin_expr = pl.when(bin_expr >= 20).then(19).otherwise(bin_expr)  # Clamp max bound inclusive
+
+                df_binned = pl.DataFrame({col_name: clean_f64}).select(bin_idx=bin_expr)
+                bin_counts = df_binned.group_by("bin_idx").len()
+                
+                # Extract into dictionary for fast lookup
+                counts_dict = {r[0]: r[1] for r in bin_counts.iter_rows()}
+
+                hist_bins =[]
+
+                for i in range(20):
+                    # Calculate bounds for the current bin
+                    lower_bound = col_min + (i / 20.0) * span
+                    upper_bound = col_min + ((i + 1) / 20.0) * span
+                    
+                    # Fetch count from dictionary, defaulting to 0
+                    b_count = counts_dict.get(i, 0)
+                    b_pct = b_count / n_rows if n_rows > 0 else 0.0
+                    
+                    hist_bins.append(
+                        HistogramBin(
+                            lower_bound=lower_bound,
+                            upper_bound=upper_bound,
+                            count=b_count,
+                            percentage=b_pct
+                        )
+                    )
+                
+                profile.histogram = hist_bins
+            elif col_min == col_max and col_min is not None:
+                # Edge case: Column is completely uniform but was classified as continuous 
+                # (e.g. all 1.5). Just create a single bin.
+                profile.histogram =[
+                    HistogramBin(
+                        lower_bound=col_min,
+                        upper_bound=col_max,
+                        count=profile.non_null_count,
+                        percentage=profile.non_null_count / n_rows if n_rows > 0 else 0.0
+                    )
+                ]
+
     def _profile_column(
         self,
         series: pl.Series,
@@ -165,6 +263,10 @@ class NumericProfiler(Profiling[NumericProfileResult]):
         # 1. Central tendency
         self._compute_central_tendency(clean, profile)
 
+        self._compute_range(clean, profile)
+
+        self._compute_frequency_and_distribution(series, clean, profile, n_rows)
+
         # 2 & 5. Percentiles (IQR is derived from these, so compute first)
         self._compute_percentiles(clean, profile)
 
@@ -173,9 +275,6 @@ class NumericProfiler(Profiling[NumericProfileResult]):
 
         # 4. Shape — skewness and kurtosis
         self._compute_shape(clean, profile)
-
-        # 6. Range
-        self._compute_range(clean, profile)
 
         # 7. Flags
         self._check_scale_anomaly(clean, profile)
