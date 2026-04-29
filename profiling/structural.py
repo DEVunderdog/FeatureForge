@@ -104,9 +104,6 @@ class StructuralProfiler:
                 config=self.config,
             ).profile(data=data)
 
-            cor_profiler = CorrelationProfiler(config=self.config)
-            result.correlation = cor_profiler.profile(data)
-
         if self.config.target_columns is not None:
             target_profiler = TargetProfiler(
                 target_column=self.config.target_columns,

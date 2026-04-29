@@ -1,4 +1,15 @@
-from .profiling.structural import StructuralProfiler, StructuralProfileResult
-from .profiling.config import ProfileConfig
+from .profiling.structural import StructuralProfiler
+from .profiling.config import (
+    ProfileConfig,
+    SemanticType,
+    Modality,
+    StructuralProfileResult,
+)
 
-__all__ = ["StructuralProfiler", "StructuralProfileResult", "ProfileConfig"]
+__all__ = [
+    "StructuralProfiler",
+    "StructuralProfileResult",
+    "ProfileConfig",
+    "SemanticType",
+    "Modality",
+]

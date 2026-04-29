@@ -1,2 +1,9 @@
-rough.txt
+*.env
 venv
+rough.txt
+rough.json
+source.html
+postman
+logs
+*.py[cod]
+*$py.class

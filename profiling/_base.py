@@ -1,31 +1,23 @@
 """
-Abstract base class for all structural profilers.
-
-Each concrete profiler targets one DataStructure and returns its own
-result type. The generic type parameter R lets callers get a properly
-typed result back without casting.
+Abstract base classes for all structural profilers.
 """
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from typing import Any, Generic, TypeVar
 
+import polars as pl
+
 from ..models._data_structure import DataStructure
-from .config import ProfileConfig
+from .config import DatasetStats, ProfileConfig
 
 R = TypeVar("R")
+Stats = TypeVar("Stats")
 
 
 class Profiling(ABC, Generic[R]):
     """
-    Generic structural profiler.
-
-    Parameters
-    ----------
-    data_structure : DataStructure
-        The kind of data this profiler handles.
-    config : ProfileConfig
-        Column scoping and threshold configuration.
+    Generic structural profiler (legacy base — kept for existing profilers).
     """
 
     def __init__(self, data_structure: DataStructure, config: ProfileConfig | None = None):
@@ -33,33 +25,40 @@ class Profiling(ABC, Generic[R]):
         self.config = config or ProfileConfig()
 
     @abstractmethod
-    def profile(self, data: Any) -> R:
-        """
-        Analyse *data* and return a structured result.
-
-        Subclasses must override this method. The concrete type of *data*
-        is validated inside each subclass (e.g. TabularProfiler checks for
-        a pandas DataFrame).
-        """
-        ...
-
-    # ------------------------------------------------------------------
-    # Helpers available to all subclasses
-    # ------------------------------------------------------------------
+    def profile(self, data: Any) -> R: ...
 
     def _resolve_columns(
         self,
         available: list[str],
         requested: list[str] | None,
     ) -> list[str]:
-        """
-        Intersect *requested* with *available*, preserving order.
-
-        If *requested* is None all available columns are returned.
-        Unknown column names are silently dropped so callers don't need to
-        guard against schema drift.
-        """
         if requested is None:
             return list(available)
         available_set = set(available)
         return [c for c in requested if c in available_set]
+
+
+class ColumnTypeProfiler(ABC, Generic[Stats]):
+    """
+    Abstract base for per-column semantic-type profilers.
+
+    One concrete implementation exists per SemanticType.
+    Receives both the target series and the full DataFrame so
+    implementations can compute cross-column statistics when needed.
+    """
+
+    @abstractmethod
+    def profile(self, series: pl.Series, df: pl.DataFrame) -> Stats: ...
+
+
+class ModalityProfiler(ABC):
+    """
+    Abstract base for dataset-level (modality) profilers.
+
+    One concrete implementation exists per Modality.
+    Returns a DatasetStats summarising shape, memory, duplicates,
+    sparsity, and optional matrices.
+    """
+
+    @abstractmethod
+    def profile(self, df: pl.DataFrame) -> DatasetStats: ...
