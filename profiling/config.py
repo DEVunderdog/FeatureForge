@@ -12,7 +12,6 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Optional, Union
 
-
 # ---------------------------------------------------------------------------
 # Core enums
 # ---------------------------------------------------------------------------
@@ -52,6 +51,7 @@ class TypeFlag(StrEnum):
     IdentifierColumn = "identifier_column"
     SequentialIndex = "sequential_index"
     FloatSequentialIndex = "float_sequential_index"
+    FreeTextCandidate = "free_text_candidate"
 
 
 # ---------------------------------------------------------------------------
@@ -245,8 +245,7 @@ class ProfileConfig:
             modality=Modality(data.get("modality", Modality.Tabular)),
             target_column=data.get("target_column"),
             column_overrides={
-                k: SemanticType(v)
-                for k, v in data.get("column_overrides", {}).items()
+                k: SemanticType(v) for k, v in data.get("column_overrides", {}).items()
             },
             exclude_columns=list(data.get("exclude_columns", [])),
             compute_correlation=bool(data.get("compute_correlation", False)),
@@ -261,3 +260,62 @@ class ProfileConfig:
     @classmethod
     def from_json(cls, json_str: str) -> ProfileConfig:
         return cls.from_dict(json.loads(json_str))
+
+
+# ---------------------------------------------------------------------------
+# Legacy result types — used by old profilers pending redesign
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class MemoryBreakdown:
+    column_bytes: dict[str, int] = field(default_factory=dict)
+
+    @property
+    def sorted_by_usage(self) -> list[tuple[str, int]]:
+        return sorted(self.column_bytes.items(), key=lambda x: x[1], reverse=True)
+
+    def top_consumers(self, n: int = 10) -> list[tuple[str, int]]:
+        return self.sorted_by_usage[:n]
+
+
+@dataclass
+class ColumnMissingness:
+    standard_nulls: int = 0
+    effective_nulls: int = 0
+    effective_null_ratio: float = 0.0
+
+
+@dataclass
+class ColumnTypeInfo:
+    column: str
+    original_dtype: str
+    inferred_dtype: str
+    numeric_kind: Optional[NumericKind] = None
+    flags: list[TypeFlag] = field(default_factory=list)
+    semantic_type: Optional[SemanticType] = None
+
+    def has_flag(self, flag: TypeFlag) -> bool:
+        return flag in self.flags
+
+
+@dataclass
+class TabularProfileResult:
+    row_count: int = 0
+    column_count: int = 0
+    total_memory_bytes: int = 0
+    memory_exceeded_threshold: bool = False
+    memory_breakdown: Optional[MemoryBreakdown] = None
+    duplicate_row_count: int = 0
+    duplicate_ratio: float = 0.0
+    missingness: dict[str, ColumnMissingness] = field(default_factory=dict)
+    overall_effective_sparsity: float = 0.0
+    column_type_info: dict[str, ColumnTypeInfo] = field(default_factory=dict)
+    analysed_columns: list[str] = field(default_factory=list)
+    duplicate_scope_columns: list[str] = field(default_factory=list)
+    sparsity_scope_columns: list[str] = field(default_factory=list)
+    was_chunked: bool = False
+
+    @property
+    def total_memory_mb(self) -> float:
+        return self.total_memory_bytes / (1024**2)

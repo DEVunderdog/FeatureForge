@@ -55,12 +55,8 @@ from .config import ProfileConfig
 # ---------------------------------------------------------------------------
 
 _RARE_THRESHOLD_PCT: float = 0.01  # <1 % of rows → rare
-_FREE_TEXT_AVG_WORDS: int = 5  # avg word count threshold
 _MIXED_TYPE_MIN_MINOR_PCT: float = 0.05
 _MIXED_TYPE_Z_SCORE: float = 1.96
-_FREE_TEXT_MEDIAN_CHARS: int = 35
-_FREE_TEXT_P90_CHARS: int = 60
-_FREE_TEXT_MIN_UNIQUE_RATIO: float = 0.40
 
 _NEAR_CONSTANT_THRESHOLD: float = 0.90
 
@@ -71,7 +67,7 @@ class CategoricalProfiler(Profiling[CategoricalProfileResult]):
     Parameters
     ----------
     columns : list[str]
-        Columns to profile.  The profiler intersects this list with
+        Columns to profile. The profiler intersects this list with
         the DataFrame's actual columns at runtime.
     config : ProfileConfig | None
         Shared profiling configuration (used for chunk_size, etc.).
@@ -155,9 +151,6 @@ class CategoricalProfiler(Profiling[CategoricalProfileResult]):
         #    coerced; here we detect columns that are *partly* numeric and
         #    partly not — a different (and more expensive) check.
         self._check_mixed_type(str_series, profile)
-
-        # 7. Free-text / natural-language flag
-        self._check_free_text(str_series, profile, n_rows)
 
         return profile
 
@@ -322,47 +315,3 @@ class CategoricalProfiler(Profiling[CategoricalProfileResult]):
 
         if lower_bound >= _MIXED_TYPE_MIN_MINOR_PCT:
             profile.flags.append(CategoricalFlag.MixedType)
-
-    # ------------------------------------------------------------------
-    # Step 7: Free-text / natural-language flag
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _check_free_text(
-        series: pl.Series,
-        profile: CategoricalColumnProfile,
-        n_rows: int,
-    ) -> None:
-        """
-        Flag as FreeText if the average value is long enough to need NLP
-        treatment rather than categorical encoding.
-
-        Thresholds (any one triggers the flag):
-          • avg word count  > 5    (split on whitespace)
-          • avg char length > 50
-          • avg token count > 10   (approx: chars / 4, per GPT tokenisation heuristic)
-        """
-        non_null = series.drop_nulls()
-        if non_null.len() == 0:
-            return
-
-        # Average character length
-        char_lengths = non_null.str.len_chars()
-
-        median_chars = float(char_lengths.median() or 0.0)
-        if median_chars > _FREE_TEXT_MEDIAN_CHARS:
-            profile.flags.append(CategoricalFlag.FreeText)
-            return
-        
-        space_counts = non_null.str.count_matches(r"\s+")
-        median_words = float(space_counts.median() or 0.0) + 1.0
-
-        if median_words > _FREE_TEXT_AVG_WORDS:
-            profile.flags.append(CategoricalFlag.FreeText)
-            return
-        
-        p90_chars = float(char_lengths.quantile(0.9) or 0.0)
-
-        if p90_chars > _FREE_TEXT_P90_CHARS and profile.unique_ratio > _FREE_TEXT_MIN_UNIQUE_RATIO:
-            profile.flags.append(CategoricalFlag.FreeText)
-            return

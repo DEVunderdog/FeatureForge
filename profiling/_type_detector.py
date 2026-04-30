@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 
 import polars as pl
 
-from .config import ColumnTypeInfo, NumericKind, TypeFlag
+from .config import ColumnTypeInfo, NumericKind, TypeFlag, SemanticType
 
 if TYPE_CHECKING:
     pass
@@ -34,6 +34,10 @@ _IDENTIFIER_UNIQUE_RATIO = 0.99  # >99 % unique → identifier
 _IDENTIFIER_MAX_MEDIAN_LENGTH = 40
 _DISCRETE_NUNIQUE_THRESHOLD = 20  # numeric with <20 unique values → discrete
 
+_FREE_TEXT_AVG_WORDS: int = 5  # avg word count above which → Text
+_FREE_TEXT_MEDIAN_CHARS: int = 35
+_FREE_TEXT_P90_CHARS: int = 60
+_FREE_TEXT_MIN_UNIQUE_RATIO: float = 0.40
 
 
 # Common boolean string values (lowercased)
@@ -99,6 +103,8 @@ class TypeDetector:
                     info.inferred_dtype = str(coerced.dtype)
                     info.flags.append(flag)  # type: ignore[arg-type]
                     working = coerced
+
+                    self._check_coerced_encoded_category(working, info, n_rows)
                 else:
                     coerced_dt, flag_dt = self._try_datetime_coerce(
                         series, col_name, n_rows
@@ -107,6 +113,10 @@ class TypeDetector:
                         info.inferred_dtype = str(coerced_dt.dtype)
                         info.flags.append(flag_dt)  # type: ignore[arg-type]
                         working = coerced_dt
+
+                        info.semantic_type = SemanticType.Datetime
+                        results[col_name] = info
+                        continue
 
             # 3: Boolean candidate
             self._check_boolean_candidate(working, info)
@@ -142,9 +152,53 @@ class TypeDetector:
                 # String identifier check
                 self._check_identifier(working, info, n_rows)
 
+                self._check_free_text(working, info, n_rows)
+
+            info.semantic_type = self._derive_semantic_type(
+                info,
+                working,
+                n_rows,
+            )
+
             results[col_name] = info
 
         return results
+
+    @staticmethod
+    def _derive_semantic_type(
+        info: ColumnTypeInfo,
+        working: pl.Series,
+        n_rows: int,
+    ) -> SemanticType:
+        if TypeFlag.IdentifierColumn in info.flags:
+            return SemanticType.Identifier
+
+        if TypeFlag.BooleanCandidate in info.flags:
+            return SemanticType.Boolean
+
+        is_native_datetime = working.dtype in (
+            pl.Date,
+            pl.Datetime,
+            pl.Duration,
+            pl.Time,
+        ) or (hasattr(pl, "Datetime") and isinstance(working.dtype, pl.Datetime))
+
+        if is_native_datetime or TypeFlag.DatetimeCoerced in info.flags:
+            return SemanticType.Datetime
+
+        if TypeFlag.EncodedCategory in info.flags:
+            return SemanticType.Categorical
+
+        if working.dtype in (pl.Utf8, pl.String):
+            if TypeFlag.FreeTextCandidate in info.flags:
+                return SemanticType.Text
+
+            return SemanticType.Categorical
+
+        if working.dtype in _NUMERIC_DTYPES:
+            return SemanticType.Numeric
+
+        return SemanticType.Categorical
 
     # ------------------------------------------------------------------
     # Step 1: Numeric coercion
@@ -189,7 +243,7 @@ class TypeDetector:
         """
         if n_rows == 0:
             return None, None
-        
+
         try:
             cast = series.str.to_datetime(strict=False)
         except Exception:
@@ -208,6 +262,10 @@ class TypeDetector:
 
     @staticmethod
     def _check_boolean_candidate(series: pl.Series, info: ColumnTypeInfo) -> None:
+        if series.dtype == pl.Boolean:
+            info.flags.append(TypeFlag.BooleanCandidate)
+            return
+
         if series.dtype in _INT_DTYPES:
             unique_vals = set(series.drop_nulls().unique().to_list())
             if unique_vals <= {0, 1}:
@@ -222,6 +280,49 @@ class TypeDetector:
     # ------------------------------------------------------------------
     # Step 4: Encoded category
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _check_coerced_encoded_category(
+        series: pl.Series, info: ColumnTypeInfo, n_rows: int
+    ) -> None:
+        """
+        Post-coercion low-cardinality check for Float64 series that originated
+        as strings. Sets EncodedCategory only when:
+        1. All non-null values are whole numbers (the strings were integer-like)
+        2. Cardinality passes the same absolute + ratio thresholds as the
+            native-integer encoded-category check.
+
+        This distinguishes "1","2","3" (label-encoded → Categorical) from
+        "1.5","2.7","3.1" (genuine floats → Numeric).
+        """
+        if TypeFlag.BooleanCandidate in info.flags:
+            return
+
+        valid = series.drop_nulls()
+        n_valid = valid.len()
+        if n_valid == 0:
+            return
+
+        # Whole-number check: reject true floats like 1.5, 2.7
+        try:
+            as_int = valid.cast(pl.Int64, strict=False)
+        except Exception:
+            return
+        if not (valid == as_int.cast(pl.Float64, strict=False)).all():
+            return
+
+        # Cardinality thresholds (same logic as _check_encoded_category)
+        n_unique = valid.n_unique()
+        min_val = int(valid.min())
+        max_val = int(valid.max())
+        range_span = (max_val - min_val) + 1
+        is_tight_sequence = range_span == n_unique
+        absolute_limit = 50 if is_tight_sequence else _ENCODED_CATEGORY_MAX_UNIQUE
+        absolute_ok = 0 < n_unique < absolute_limit
+        ratio_ok = (n_unique / n_valid) < _ENCODED_CATEGORY_MAX_RATIO
+
+        if (absolute_ok and ratio_ok) or (is_tight_sequence and absolute_ok):
+            info.flags.append(TypeFlag.EncodedCategory)
 
     @staticmethod
     def _check_encoded_category(
@@ -340,3 +441,37 @@ class TypeDetector:
             info.numeric_kind = NumericKind.Discrete
         else:
             info.numeric_kind = NumericKind.Continuous
+
+    @staticmethod
+    def _check_free_text(
+        series: pl.Series,
+        info: ColumnTypeInfo,
+        n_rows: int,
+    ) -> None:
+        non_null = series.drop_nulls()
+        if non_null.len() == 0:
+            return
+
+        char_lengths = non_null.str.len_chars()
+        median_chars = float(char_lengths.median() or 0.0)
+
+        if median_chars > _FREE_TEXT_MEDIAN_CHARS:
+            info.flags.append(TypeFlag.FreeTextCandidate)
+            return
+
+        space_counts = non_null.str.count_matches(r"\s+")
+        median_words = float(space_counts.median() or 0.0) + 1.0
+
+        if median_words > _FREE_TEXT_AVG_WORDS:
+            info.flags.append(TypeFlag.FreeTextCandidate)
+            return
+
+        p90_chars = float(char_lengths.quantile(0.9) or 0.0)
+
+        unique_ratio = series.n_unique() / n_rows if n_rows > 0 else 0.0
+
+        if (
+            p90_chars > _FREE_TEXT_P90_CHARS
+            and unique_ratio > _FREE_TEXT_MIN_UNIQUE_RATIO
+        ):
+            info.flags.append(TypeFlag.FreeTextCandidate)
