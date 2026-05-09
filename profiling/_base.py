@@ -15,9 +15,6 @@ Stats = TypeVar("Stats")
 
 
 class Profiling(ABC, Generic[R]):
-    """
-    Generic structural profiler (legacy base — kept for existing profilers).
-    """
 
     def __init__(self, config: ProfileConfig | None = None):
         self.config = config or ProfileConfig()
@@ -34,20 +31,6 @@ class Profiling(ABC, Generic[R]):
             return list(available)
         available_set = set(available)
         return [c for c in requested if c in available_set]
-
-
-class ColumnTypeProfiler(ABC, Generic[Stats]):
-    """
-    Abstract base for per-column semantic-type profilers.
-
-    One concrete implementation exists per SemanticType.
-    Receives both the target series and the full DataFrame so
-    implementations can compute cross-column statistics when needed.
-    """
-
-    @abstractmethod
-    def profile(self, series: pl.Series, df: pl.DataFrame) -> Stats: ...
-
 
 class ModalityProfiler(ABC):
     """

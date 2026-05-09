@@ -374,11 +374,14 @@ class DatasetStats:
     overall_sparsity: float = 0.0
     was_chunked: bool = False
     missingness_matrix: Optional[dict[str, dict[str, float]]] = None
-    correlation: CorrelationProfileResult = field(
-        default_factory=CorrelationProfileResult,
-    )
     row_distribution: RowMissingnessDistribution = field(
         default_factory=RowMissingnessDistribution
+    )
+
+    feature_correlation: Optional[CorrelationProfileResult] = None
+
+    target_correlations: dict[str, CorrelationProfileResult] = field(
+        default_factory=dict,
     )
 
 
@@ -463,18 +466,6 @@ class ProfileConfig:
         return cls.from_dict(json.loads(json_str))
 
 
-# ---------------------------------------------------------------------------
-# Legacy result types — used by old profilers pending redesign
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class ColumnMissingness:
-    standard_nulls: int = 0
-    effective_nulls: int = 0
-    effective_null_ratio: float = 0.0
-
-
 @dataclass
 class ColumnTypeInfo:
     column: str
@@ -486,25 +477,3 @@ class ColumnTypeInfo:
 
     def has_flag(self, flag: TypeFlag) -> bool:
         return flag in self.flags
-
-
-@dataclass
-class TabularProfileResult:
-    row_count: int = 0
-    column_count: int = 0
-    total_memory_bytes: int = 0
-    memory_exceeded_threshold: bool = False
-    memory_breakdown: Optional[MemoryBreakdown] = None
-    duplicate_row_count: int = 0
-    duplicate_ratio: float = 0.0
-    missingness: dict[str, ColumnMissingness] = field(default_factory=dict)
-    overall_effective_sparsity: float = 0.0
-    column_type_info: dict[str, ColumnTypeInfo] = field(default_factory=dict)
-    analysed_columns: list[str] = field(default_factory=list)
-    duplicate_scope_columns: list[str] = field(default_factory=list)
-    sparsity_scope_columns: list[str] = field(default_factory=list)
-    was_chunked: bool = False
-
-    @property
-    def total_memory_mb(self) -> float:
-        return self.total_memory_bytes / (1024**2)
