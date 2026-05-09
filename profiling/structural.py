@@ -25,13 +25,6 @@ from ._missingness_profiler import MissingnessProfiler
 from ._target_profiler import TargetProfiler
 from ._correlation_profiler import CorrelationProfiler
 
-# REMOVE: these result type imports were unused in the orchestrator
-# from ._categorical_config import CategoricalProfileResult
-# from ._numeric_config import NumericProfileResult
-# from ._missingness_config import MissingnessProfileResult
-# from ._target_config import TargetProfileResult
-# from ._correlation_config import CorrelationProfileResult
-
 _ROW_DROP_THRESHOLD = 0.50
 
 
@@ -127,10 +120,6 @@ class StructuralProfiler:
             result.dataset.correlation = corr_result
 
         return result
-
-    # ------------------------------------------------------------------
-    # Row-missingness distribution — unchanged
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _compute_row_distribution(
