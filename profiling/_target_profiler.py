@@ -60,7 +60,7 @@ class TargetProfiler(Profiling[TargetProfileResult]):
         # 1. Type Detection -> Problem Type Mapping
         detector = TypeDetector(columns=[self.target_column])
         type_info = detector.detect(df)[self.target_column]
-        problem_type = self._determine_problem_type(series, type_info)
+        problem_type = self._determine_problem_type(series, type_info, n_rows)
 
         result = TargetProfileResult(
             column=self.target_column, problem_type=problem_type

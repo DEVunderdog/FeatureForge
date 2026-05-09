@@ -31,50 +31,46 @@ Attach ``num_result`` to ``TabularProfileResult`` as
 
 from __future__ import annotations
 
-import warnings
 from typing import Any
 
 import polars as pl
 
-from ..models._data_structure import DataStructure
 from ._base import Profiling
-from .config import ProfileConfig
-from ._correlation_profiler import _INT_DTYPES
-from ._numeric_config import (
-    ColumnNumericProfile,
+from .config import (
+    ProfileConfig,
+    NumericStats,
+    PercentileSnapshot,
     KurtosisTag,
     NumericFlag,
-    NumericProfileResult,
-    PercentileProfile,
     SkewSeverity,
     NumericTopValueEntry,
     HistogramBin,
+    SemanticType,
 )
+from ._correlation_profiler import _INT_DTYPES
+from ._numeric_config import (
+    NumericProfileResult,
+)
+from ..models._data_types import _NUMERIC_DTYPES
 
 # ---------------------------------------------------------------------------
 # Thresholds (documented so callers can see what drives labels / flags)
 # ---------------------------------------------------------------------------
 
 # Skewness severity bands (applied to |skewness|)
-_SKEW_NORMAL   = 0.5   # |skew| ≤ this  →  normal
-_SKEW_MODERATE = 1.0   # |skew| ≤ this  →  moderate
-_SKEW_HIGH     = 2.0   # |skew| ≤ this  →  high
+_SKEW_NORMAL = 0.5  # |skew| ≤ this  →  normal
+_SKEW_MODERATE = 1.0  # |skew| ≤ this  →  moderate
+_SKEW_HIGH = 2.0  # |skew| ≤ this  →  high
 #                        |skew| > 2.0   →  severe
 
 # Excess kurtosis bands
-_KURT_PLATY_UPPER = -1.0   # excess < this  →  platykurtic
-_KURT_LEPTO_LOWER =  3.0   # excess > this  →  leptokurtic
+_KURT_PLATY_UPPER = -1.0  # excess < this  →  platykurtic
+_KURT_LEPTO_LOWER = 3.0  # excess > this  →  leptokurtic
 #                            else          →  mesokurtic
 
 # Scale-anomaly: flag when max/min ratio spans ≥ 3 orders of magnitude
 _SCALE_ORDERS_OF_MAGNITUDE = 3  # i.e. ratio ≥ 10^3
 
-# Numeric dtypes accepted for profiling
-_PROFILED_DTYPES = {
-    pl.Int8, pl.Int16, pl.Int32, pl.Int64,
-    pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64,
-    pl.Float32, pl.Float64,
-}
 
 # Percentile quantile levels (in order)
 _QUANTILE_LEVELS = (0.01, 0.05, 0.25, 0.50, 0.75, 0.95, 0.99)
@@ -97,49 +93,58 @@ class NumericProfiler(Profiling[NumericProfileResult]):
 
     def __init__(
         self,
-        columns: list[str],
         config: ProfileConfig | None = None,
     ) -> None:
-        super().__init__(DataStructure.Tabular, config)
-        self._requested_columns = columns
+        super().__init__(config)
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    def profile(self, data: Any) -> NumericProfileResult:
+    def profile(
+        self,
+        data: Any,
+        columns: list[str],
+    ) -> NumericProfileResult:
         if not isinstance(data, pl.DataFrame):
             raise TypeError(
                 f"NumericProfiler expects a Polars DataFrame, "
                 f"got {type(data).__name__}."
             )
-        return self._run(data)
+        return self._run(data, columns)
 
     # ------------------------------------------------------------------
     # Orchestration
     # ------------------------------------------------------------------
 
-    def _run(self, df: pl.DataFrame) -> NumericProfileResult:
+    def _eligible(self, series: pl.Series) -> bool:
+        override = self.config.column_overrides.get(series.name)
+        if override == SemanticType.Numeric:
+            return True
+
+        if override is not None:
+            return False
+
+        return series.dtype in _NUMERIC_DTYPES
+
+    def _run(
+        self,
+        df: pl.DataFrame,
+        columns: list[str],
+    ) -> NumericProfileResult:
         result = NumericProfileResult()
 
-        # Intersect requested columns with the actual schema
-        available = self._resolve_columns(df.columns, self._requested_columns)
-        result.analysed_columns = available
-
         n_rows = df.height
+        # Intersect requested columns with the actual schema
+        available = [
+            c
+            for c in self._resolve_columns(df.columns, columns)
+            if self._eligible(df[c])
+        ]
+        result.analysed_columns = available
 
         for col_name in available:
             series = df[col_name]
-
-            # Skip non-numeric columns with a warning
-            if series.dtype not in _PROFILED_DTYPES:
-                warnings.warn(
-                    f"NumericProfiler: column '{col_name}' has dtype "
-                    f"{series.dtype!s}, which is not numeric — skipping.",
-                    stacklevel=2,
-                )
-                continue
-
             profile = self._profile_column(series, col_name, n_rows)
             result.columns[col_name] = profile
 
@@ -153,11 +158,11 @@ class NumericProfiler(Profiling[NumericProfileResult]):
     def _compute_frequency_and_distribution(
         original_series: pl.Series,
         clean_f64: pl.Series,
-        profile: ColumnNumericProfile,
+        profile: NumericStats,
         n_rows: int,
     ) -> None:
         """
-        Compute Mode, and depending on whether the feature is continuous or discrete, 
+        Compute Mode, and depending on whether the feature is continuous or discrete,
         calculate a 20-bin histogram OR Top-10 value counts.
         """
         if clean_f64.len() == 0:
@@ -178,16 +183,18 @@ class NumericProfiler(Profiling[NumericProfileResult]):
             profile.flags.append(NumericFlag.NearConstant)
 
         n_unique = vc.height
-        is_discrete = original_series.dtype in _INT_DTYPES or n_unique <= _DISCRETE_MAX_UNIQUE
+        is_discrete = (
+            original_series.dtype in _INT_DTYPES or n_unique <= _DISCRETE_MAX_UNIQUE
+        )
 
         if is_discrete:
             # --- Top-10 Distribution (Discrete) ---
             top_rows = min(10, n_unique)
-            profile.top_values =[
+            profile.top_values = [
                 NumericTopValueEntry(
                     value=float(vc[col_name][i]),
                     count=int(vc["count"][i]),
-                    percentage=int(vc["count"][i]) / n_rows if n_rows > 0 else 0.0
+                    percentage=int(vc["count"][i]) / n_rows if n_rows > 0 else 0.0,
                 )
                 for i in range(top_rows)
             ]
@@ -198,47 +205,52 @@ class NumericProfiler(Profiling[NumericProfileResult]):
 
             if col_min is not None and col_max is not None and col_max > col_min:
                 span = col_max - col_min
-                
+
                 # Robust math-based binning to avoid Polars API version mismatches
-                bin_expr = ((pl.col(col_name) - col_min) / span * 20).floor().cast(pl.Int64)
-                bin_expr = pl.when(bin_expr >= 20).then(19).otherwise(bin_expr)  # Clamp max bound inclusive
+                bin_expr = (
+                    ((pl.col(col_name) - col_min) / span * 20).floor().cast(pl.Int64)
+                )
+                bin_expr = (
+                    pl.when(bin_expr >= 20).then(19).otherwise(bin_expr)
+                )  # Clamp max bound inclusive
 
                 df_binned = pl.DataFrame({col_name: clean_f64}).select(bin_idx=bin_expr)
                 bin_counts = df_binned.group_by("bin_idx").len()
-                
+
                 # Extract into dictionary for fast lookup
                 counts_dict = {r[0]: r[1] for r in bin_counts.iter_rows()}
 
-                hist_bins =[]
+                hist_bins = []
 
                 for i in range(20):
                     # Calculate bounds for the current bin
                     lower_bound = col_min + (i / 20.0) * span
                     upper_bound = col_min + ((i + 1) / 20.0) * span
-                    
+
                     # Fetch count from dictionary, defaulting to 0
                     b_count = counts_dict.get(i, 0)
                     b_pct = b_count / n_rows if n_rows > 0 else 0.0
-                    
+
                     hist_bins.append(
                         HistogramBin(
                             lower_bound=lower_bound,
                             upper_bound=upper_bound,
                             count=b_count,
-                            percentage=b_pct
+                            percentage=b_pct,
                         )
                     )
-                
+
                 profile.histogram = hist_bins
             elif col_min == col_max and col_min is not None:
-                # Edge case: Column is completely uniform but was classified as continuous 
+                # Edge case: Column is completely uniform but was classified as continuous
                 # (e.g. all 1.5). Just create a single bin.
-                profile.histogram =[
+                non_null_len = clean_f64.len()
+                profile.histogram = [
                     HistogramBin(
                         lower_bound=col_min,
                         upper_bound=col_max,
-                        count=profile.non_null_count,
-                        percentage=profile.non_null_count / n_rows if n_rows > 0 else 0.0
+                        count=non_null_len,
+                        percentage=non_null_len / n_rows if n_rows > 0 else 0.0,
                     )
                 ]
 
@@ -247,36 +259,21 @@ class NumericProfiler(Profiling[NumericProfileResult]):
         series: pl.Series,
         col_name: str,
         n_rows: int,
-    ) -> ColumnNumericProfile:
-        profile = ColumnNumericProfile(column=col_name, total_rows=n_rows)
+    ) -> NumericStats:
+        profile = NumericStats()
 
-        # Cast to Float64 for uniform arithmetic; avoids integer overflow
-        # in variance/skewness calculations.
         f64 = series.cast(pl.Float64)
         clean = f64.drop_nulls()
-        profile.non_null_count = clean.len()
 
-        if profile.non_null_count == 0:
-            # Nothing to compute — leave all fields as None
+        if clean.len() == 0:
             return profile
 
-        # 1. Central tendency
         self._compute_central_tendency(clean, profile)
-
         self._compute_range(clean, profile)
-
         self._compute_frequency_and_distribution(series, clean, profile, n_rows)
-
-        # 2 & 5. Percentiles (IQR is derived from these, so compute first)
         self._compute_percentiles(clean, profile)
-
-        # 3. Spread  (std, variance; IQR comes from percentiles)
         self._compute_spread(clean, profile)
-
-        # 4. Shape — skewness and kurtosis
         self._compute_shape(clean, profile)
-
-        # 7. Flags
         self._check_scale_anomaly(clean, profile)
 
         return profile
@@ -288,12 +285,12 @@ class NumericProfiler(Profiling[NumericProfileResult]):
     @staticmethod
     def _compute_central_tendency(
         clean: pl.Series,
-        profile: ColumnNumericProfile,
+        profile: NumericStats,
     ) -> None:
-        mean   = float(clean.mean())      # type: ignore[arg-type]
-        median = float(clean.median())    # type: ignore[arg-type]
+        mean = float(clean.mean())  # type: ignore[arg-type]
+        median = float(clean.median())  # type: ignore[arg-type]
 
-        profile.mean   = mean
+        profile.mean = mean
         profile.median = median
 
         # Mean/median ratio: primary skew indicator at a glance.
@@ -310,18 +307,18 @@ class NumericProfiler(Profiling[NumericProfileResult]):
     @staticmethod
     def _compute_spread(
         clean: pl.Series,
-        profile: ColumnNumericProfile,
+        profile: NumericStats,
     ) -> None:
         n = clean.len()
         if n < 2:
             # Std / variance undefined for a single observation
-            profile.std      = 0.0
+            profile.std = 0.0
             profile.variance = 0.0
             return
 
-        std = float(clean.std(ddof=1))   # type: ignore[arg-type]
-        profile.std      = std
-        profile.variance = std ** 2
+        std = float(clean.std(ddof=1))  # type: ignore[arg-type]
+        profile.std = std
+        profile.variance = std**2
 
     # ------------------------------------------------------------------
     # Step 3: Shape — skewness and kurtosis
@@ -330,7 +327,7 @@ class NumericProfiler(Profiling[NumericProfileResult]):
     @staticmethod
     def _compute_shape(
         clean: pl.Series,
-        profile: ColumnNumericProfile,
+        profile: NumericStats,
     ) -> None:
         n = clean.len()
         if n < 3:
@@ -338,14 +335,14 @@ class NumericProfiler(Profiling[NumericProfileResult]):
             return
 
         mean = profile.mean
-        std  = profile.std
+        std = profile.std
 
         if std is None or std == 0.0:
             # Constant column — skewness and kurtosis are undefined
-            profile.skewness      = 0.0
-            profile.kurtosis      = 0.0
-            profile.skew_severity = SkewSeverity.Normal
-            profile.kurtosis_tag  = KurtosisTag.Mesokurtic
+            profile.skewness = 0.0
+            profile.kurtosis = 0.0
+            profile.skewness_severity = SkewSeverity.Normal
+            profile.kurtosis_tag = KurtosisTag.Mesokurtic
             return
 
         # Standardised deviations
@@ -353,17 +350,16 @@ class NumericProfiler(Profiling[NumericProfileResult]):
 
         # --- Skewness: Fisher's adjusted (bias-corrected) ---
         # G1 = [n / ((n-1)(n-2))] * Σ z³
-        skew_raw = float((z ** 3).sum())
+        skew_raw = float((z**3).sum())
         skewness = (n / ((n - 1) * (n - 2))) * skew_raw
 
         # --- Excess kurtosis: bias-corrected ---
         # G2 = [n(n+1) / ((n-1)(n-2)(n-3))] * Σ z⁴
         #      - 3(n-1)² / ((n-2)(n-3))
-        kurt_raw = float((z ** 4).sum())
-        kurtosis = (
-            (n * (n + 1)) / ((n - 1) * (n - 2) * (n - 3)) * kurt_raw
-            - 3 * (n - 1) ** 2 / ((n - 2) * (n - 3))
-        )
+        kurt_raw = float((z**4).sum())
+        kurtosis = (n * (n + 1)) / ((n - 1) * (n - 2) * (n - 3)) * kurt_raw - 3 * (
+            n - 1
+        ) ** 2 / ((n - 2) * (n - 3))
 
         profile.skewness = skewness
         profile.kurtosis = kurtosis
@@ -394,10 +390,10 @@ class NumericProfiler(Profiling[NumericProfileResult]):
     @staticmethod
     def _compute_range(
         clean: pl.Series,
-        profile: ColumnNumericProfile,
+        profile: NumericStats,
     ) -> None:
-        profile.min = float(clean.min())   # type: ignore[arg-type]
-        profile.max = float(clean.max())   # type: ignore[arg-type]
+        profile.min = float(clean.min())  # type: ignore[arg-type]
+        profile.max = float(clean.max())  # type: ignore[arg-type]
 
     # ------------------------------------------------------------------
     # Step 5: Percentiles
@@ -406,7 +402,7 @@ class NumericProfiler(Profiling[NumericProfileResult]):
     @staticmethod
     def _compute_percentiles(
         clean: pl.Series,
-        profile: ColumnNumericProfile,
+        profile: NumericStats,
     ) -> None:
         # Polars quantile() is O(n log n) once; compute all at once via select
         # to avoid repeated passes.
@@ -418,14 +414,14 @@ class NumericProfiler(Profiling[NumericProfileResult]):
         )
         row = quantile_frame.row(0)
         # row order: p1, p5, p25, p50, p75, p95, p99
-        profile.percentiles = PercentileProfile(
-            p1  = row[0],
-            p5  = row[1],
-            p25 = row[2],
-            p50 = row[3],
-            p75 = row[4],
-            p95 = row[5],
-            p99 = row[6],
+        profile.percentiles = PercentileSnapshot(
+            p1=row[0],
+            p5=row[1],
+            p25=row[2],
+            p50=row[3],
+            p75=row[4],
+            p95=row[5],
+            p99=row[6],
         )
 
     # ------------------------------------------------------------------
@@ -435,7 +431,7 @@ class NumericProfiler(Profiling[NumericProfileResult]):
     @staticmethod
     def _check_scale_anomaly(
         clean: pl.Series,
-        profile: ColumnNumericProfile,
+        profile: NumericStats,
     ) -> None:
         """
         Flag when values span ≥ 3 orders of magnitude *on the positive side*.
@@ -468,10 +464,10 @@ class NumericProfiler(Profiling[NumericProfileResult]):
         if abs_min == 0.0:
             # Any non-zero max with a zero minimum → infinite ratio →
             # conservatively flag if max is large enough to be suspicious.
-            if abs_max >= 10 ** _SCALE_ORDERS_OF_MAGNITUDE:
+            if abs_max >= 10**_SCALE_ORDERS_OF_MAGNITUDE:
                 profile.flags.append(NumericFlag.ScaleAnomaly)
             return
 
         ratio = abs_max / abs_min
-        if ratio >= 10 ** _SCALE_ORDERS_OF_MAGNITUDE:
+        if ratio >= 10**_SCALE_ORDERS_OF_MAGNITUDE:
             profile.flags.append(NumericFlag.ScaleAnomaly)

@@ -60,7 +60,7 @@ from ._correlation_config import (
     TargetType,
 )
 from ..models._data_structure import DataStructure
-
+from ..models._data_types import _NUMERIC_DTYPES, _INT_DTYPES
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -70,12 +70,6 @@ _TOP_N_FEATURE_TARGET: int = 10           # how many feature-target entries to k
 _MI_N_NEIGHBORS: int = 3                  # sklearn MI n_neighbors hyperparameter
 
 # Polars integer dtypes (for rank transform)
-_INT_DTYPES = {
-    pl.Int8, pl.Int16, pl.Int32, pl.Int64,
-    pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64,
-}
-_NUMERIC_DTYPES = _INT_DTYPES | {pl.Float32, pl.Float64}
-
 
 # ---------------------------------------------------------------------------
 # Union-Find (for near-redundancy clustering)

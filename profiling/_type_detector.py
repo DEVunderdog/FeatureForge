@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 import polars as pl
 
 from .config import ColumnTypeInfo, NumericKind, TypeFlag, SemanticType
+from ..models._data_types import _INT_DTYPES, _NUMERIC_DTYPES
 
 if TYPE_CHECKING:
     pass
@@ -42,22 +43,6 @@ _FREE_TEXT_MIN_UNIQUE_RATIO: float = 0.40
 
 # Common boolean string values (lowercased)
 _BOOL_STRING_SET = {"true", "false", "yes", "no", "t", "f", "0", "1"}
-
-# Polars integer types
-_INT_DTYPES = {
-    pl.Int8,
-    pl.Int16,
-    pl.Int32,
-    pl.Int64,
-    pl.UInt8,
-    pl.UInt16,
-    pl.UInt32,
-    pl.UInt64,
-}
-
-# Polars numeric types (integer + float)
-_NUMERIC_DTYPES = _INT_DTYPES | {pl.Float32, pl.Float64}
-
 
 class TypeDetector:
     """

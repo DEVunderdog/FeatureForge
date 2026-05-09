@@ -37,18 +37,20 @@ import math
 from typing import Any
 
 import polars as pl
-from ..models._data_structure import DataStructure
 from ._base import Profiling
 from ._categorical_config import (
-    CategoricalColumnProfile,
-    CategoricalFlag,
     CategoricalProfileResult,
-    ImbalanceMetrics,
-    RareCategoryStats,
-    TopValueEntry,
 )
-from .config import ProfileConfig
-
+from .config import (
+    ProfileConfig,
+    CategoricalStats,
+    TopValueEntry,
+    CategoricalFlag,
+    RareCategoryStats,
+    ImbalanceMetrics,
+    SemanticType,
+)
+from ..models._data_types import _CAT_DTYPES
 
 # ---------------------------------------------------------------------------
 # Module-level thresholds (documented so callers can see what drives flags)
@@ -59,6 +61,7 @@ _MIXED_TYPE_MIN_MINOR_PCT: float = 0.05
 _MIXED_TYPE_Z_SCORE: float = 1.96
 
 _NEAR_CONSTANT_THRESHOLD: float = 0.90
+
 
 class CategoricalProfiler(Profiling[CategoricalProfileResult]):
     """
@@ -83,38 +86,60 @@ class CategoricalProfiler(Profiling[CategoricalProfileResult]):
 
     def __init__(
         self,
-        columns: list[str],
         config: ProfileConfig | None = None,
     ) -> None:
-        super().__init__(DataStructure.Tabular, config)
-        self._requested_columns = columns
+        super().__init__(config)
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    def profile(self, data: Any) -> CategoricalProfileResult:
+    def profile(
+        self,
+        data: Any,
+        columns: list[str],
+    ) -> CategoricalProfileResult:
         if not isinstance(data, pl.DataFrame):
             raise TypeError(
                 f"CategoricalProfiler expects a Polars DataFrame, "
                 f"got {type(data).__name__}."
             )
-        return self._run(data)
+        return self._run(data, columns)
 
     # ------------------------------------------------------------------
     # Orchestration
     # ------------------------------------------------------------------
 
-    def _run(self, df: pl.DataFrame) -> CategoricalProfileResult:
+    def _eligible(
+        self,
+        series: pl.Series,
+    ) -> bool:
+        override = self.config.column_overrides.get(series.name)
+        if override == SemanticType.Categorical:
+            return True
+
+        if override is not None:
+            return False
+
+        return series.dtype in _CAT_DTYPES
+
+    def _run(
+        self,
+        df: pl.DataFrame,
+        columns: list[str],
+    ) -> CategoricalProfileResult:
         result = CategoricalProfileResult()
 
         # Resolve columns against actual schema
-        cols = self._resolve_columns(df.columns, self._requested_columns)
-        result.analysed_columns = cols
+        available = [
+        c for c in self._resolve_columns(df.columns, columns)
+        if self._eligible(df[c])
+    ]
+        result.analysed_columns = available
 
         n_rows = df.height
 
-        for col_name in cols:
+        for col_name in available:
             series = df[col_name]
             profile = self._profile_column(series, col_name, n_rows)
             result.columns[col_name] = profile
@@ -130,8 +155,8 @@ class CategoricalProfiler(Profiling[CategoricalProfileResult]):
         series: pl.Series,
         col_name: str,
         n_rows: int,
-    ) -> CategoricalColumnProfile:
-        profile = CategoricalColumnProfile(column=col_name, total_rows=n_rows)
+    ) -> CategoricalStats:
+        profile = CategoricalStats()
 
         # Cast to String for uniform downstream treatment
         str_series = series.cast(pl.Utf8, strict=False)
@@ -142,9 +167,6 @@ class CategoricalProfiler(Profiling[CategoricalProfileResult]):
         # 3. Value distribution (top-5, rare categories, imbalance)
         #    Returns the value-count frame for reuse in later steps.
         self._compute_value_distribution(str_series, profile, n_rows)
-
-        # 4. Ordinal vs nominal detection
-        self._detect_kind(str_series, col_name, profile)
 
         # 5. Mixed-type flag
         #    We already know from TypeDetector whether the column was numeric-
@@ -161,7 +183,7 @@ class CategoricalProfiler(Profiling[CategoricalProfileResult]):
     @staticmethod
     def _compute_cardinality(
         series: pl.Series,
-        profile: CategoricalColumnProfile,
+        profile: CategoricalStats,
         n_rows: int,
     ) -> None:
         cardinality = series.drop_nulls().n_unique()
@@ -169,31 +191,13 @@ class CategoricalProfiler(Profiling[CategoricalProfileResult]):
         profile.unique_ratio = cardinality / n_rows if n_rows > 0 else 0.0
 
     # ------------------------------------------------------------------
-    # Step 2: Missingness (nulls + whitespace)
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _compute_missingness(
-        series: pl.Series,
-        profile: CategoricalColumnProfile,
-    ) -> None:
-        profile.null_count = series.null_count()
-
-        # Whitespace-only: non-null values that strip to ""
-        non_null = series.drop_nulls()
-        whitespace_mask = non_null.str.strip_chars() == ""
-        profile.whitespace_count = int(whitespace_mask.sum())
-
-        profile.effective_missing_count = profile.null_count + profile.whitespace_count
-
-    # ------------------------------------------------------------------
-    # Step 3: Value distribution
+    # Step 2: Value distribution
     # ------------------------------------------------------------------
 
     def _compute_value_distribution(
         self,
         series: pl.Series,
-        profile: CategoricalColumnProfile,
+        profile: CategoricalStats,
         n_rows: int,
     ) -> pl.DataFrame:
         """
@@ -202,9 +206,9 @@ class CategoricalProfiler(Profiling[CategoricalProfileResult]):
         """
         # Exclude nulls and whitespace-only values from distribution stats
         clean = series.filter(
-            ~series.is_null() & 
-            (series.str.strip_chars() != "") & 
-            ~series.str.to_uppercase().is_in(["NA", "NAN", "NULL", "NONE", "?"])
+            ~series.is_null()
+            & (series.str.strip_chars() != "")
+            & ~series.str.to_uppercase().is_in(["NA", "NAN", "NULL", "NONE", "?"])
         )
 
         if clean.len() == 0:
@@ -230,7 +234,6 @@ class CategoricalProfiler(Profiling[CategoricalProfileResult]):
         profile.mode_frequency = profile.top_values[0].percentage
         if profile.mode_frequency > _NEAR_CONSTANT_THRESHOLD:
             profile.flags.append(CategoricalFlag.NearConstant)
-        
 
         # --- Rare category analysis ---
         rare_threshold_abs = max(1, math.floor(_RARE_THRESHOLD_PCT * n_rows))
@@ -278,7 +281,7 @@ class CategoricalProfiler(Profiling[CategoricalProfileResult]):
     @staticmethod
     def _check_mixed_type(
         series: pl.Series,
-        profile: CategoricalColumnProfile,
+        profile: CategoricalStats,
     ) -> None:
         """
         Flag if the column contains both numeric-looking and non-numeric-looking

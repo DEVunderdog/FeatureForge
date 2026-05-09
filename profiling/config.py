@@ -10,11 +10,15 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Optional, Union
+from typing import Optional, Union, List
 
 from ._missingness_config import (
     ColumnMissingnessProfile,
 )
+from ._correlation_config import (
+    CorrelationProfileResult,
+)
+from ._target_config import TargetProfileResult
 
 # ---------------------------------------------------------------------------
 # Core enums
@@ -80,36 +84,196 @@ class PercentileSnapshot:
         return None
 
 
+class SkewSeverity(StrEnum):
+    Normal = "normal"  # |skew| <= 0.5
+    Moderate = "moderate"  # 0.5 < |skew| <= 1.0
+    High = "high"  # 1.0 < |skew| <= 2.0
+    Severe = "severe"  # |skew| > 2.0
+
+
+class KurtosisTag(StrEnum):
+    Platykurtic = "platykurtic"  # excess kurtosis < -1  (thin tails)
+    Mesokurtic = "mesokurtic"  # -1 <= excess <= 3     (near-normal)
+    Leptokurtic = "leptokurtic"  # excess kurtosis > 3   (heavy tails)
+
+
+class NumericFlag(StrEnum):
+    ScaleAnomaly = "scale_anomaly"  # values span 3+ orders of magnitude
+    NearConstant = "near_constant"
+
+
+@dataclass
+class NumericTopValueEntry:
+    value: float
+    count: int
+    percentage: float
+
+
+@dataclass
+class HistogramBin:
+    lower_bound: float
+    upper_bound: float
+    count: int
+    percentage: float
+
+
 @dataclass
 class NumericStats:
     mean: Optional[float] = None
     median: Optional[float] = None
+    mean_median_ratio: Optional[float] = None
+
+    mode: Optional[float] = None
+    mode_frequency: float = 0.0
+    top_values: list[NumericTopValueEntry] = field(default_factory=list)
+    histogram: list[HistogramBin] = field(default_factory=list)
+
     std: Optional[float] = None
+    variance: Optional[float] = None
     min: Optional[float] = None
     max: Optional[float] = None
+
     percentiles: PercentileSnapshot = field(default_factory=PercentileSnapshot)
     skewness: Optional[float] = None
     kurtosis: Optional[float] = None
-    skewness_severity: Optional[str] = None  # "normal" | "moderate" | "high" | "severe"
-    histogram: list[dict] = field(default_factory=list)
-    top_values: list[dict] = field(default_factory=list)
-    scale_anomaly: bool = False
-    near_constant: bool = False
+    skewness_severity: Optional[SkewSeverity] = None
+    kurtosis_tag: Optional[KurtosisTag] = None
+
+    flags: List[NumericFlag] = field(default_factory=list)
+
+    @property
+    def iqr(self) -> Optional[float]:
+        return self.percentiles.iqr
+
+    def has_flag(self, flag: NumericFlag) -> bool:
+        return flag in self.flags
+
+
+class CategoricalFlag(StrEnum):
+    MixedType = "mixed_type"
+    FreeText = "free_text"
+    NearConstant = "near_constant"
+
+
+@dataclass
+class TopValueEntry:
+    """One entry in the top-N value counts list."""
+
+    value: object
+    count: int
+    percentage: float  # fraction of total rows (0–1)
+
+
+@dataclass
+class RareCategoryStats:
+    """
+    Summary of low-frequency categories.
+
+    Threshold used: categories whose row count < 1 % of total rows.
+    """
+
+    threshold_pct: float  # always 0.01
+    rare_category_count: int = 0  # distinct categories below threshold
+    total_rare_rows: int = 0  # rows belonging to rare categories
+    rare_row_percentage: float = 0.0  # total_rare_rows / row_count
+
+
+@dataclass
+class ImbalanceMetrics:
+    """
+    Three complementary measures of class-distribution skew.
+
+    class_ratio  : max_freq / min_freq  (>10 is a red flag)
+    shannon_entropy : -Σ p·log₂(p)     (0 = fully concentrated)
+    gini_impurity   : 1 - Σ p²         (0 = perfectly pure)
+    """
+
+    class_ratio: float = 0.0
+    shannon_entropy: float = 0.0
+    gini_impurity: float = 0.0
 
 
 @dataclass
 class CategoricalStats:
     cardinality: int = 0
     unique_ratio: float = 0.0
-    is_ordinal: Optional[bool] = None
-    top_values: list[dict] = field(default_factory=list)
-    rare_category_count: int = 0
-    rare_category_ratio: float = 0.0
-    whitespace_count: int = 0
-    has_mixed_types: bool = False
-    entropy: Optional[float] = None
-    gini: Optional[float] = None
-    class_ratio: Optional[float] = None
+    mode_frequency: float = 0.0
+    top_values: list[TopValueEntry] = field(default_factory=list)
+    rare_categories: RareCategoryStats = field(
+        default_factory=lambda: RareCategoryStats(threshold_pct=0.01),
+    )
+    imbalance: ImbalanceMetrics = field(default_factory=ImbalanceMetrics)
+    flags: list[CategoricalFlag] = field(default_factory=list)
+
+
+class InferredGranularity(StrEnum):
+    Yearly = "yearly"  # median gap ≈ 365 days
+    Monthly = "monthly"  # median gap ≈ 30 days
+    Weekly = "weekly"  # median gap ≈ 7 days
+    Daily = "daily"  # median gap ≈ 1 day
+    Hourly = "hourly"  # median gap ≈ 1 hour
+    Minutely = "minutely"  # median gap ≈ 1 minute
+    Secondly = "secondly"  # median gap < 1 minute
+    Irregular = "irregular"  # no dominant periodicity
+
+
+class DatetimeFlag(StrEnum):
+    FutureDates = "future_dates"  # values > current date found
+    HighGapVariance = "high_gap_variance"  # coefficient of variation > 1.0
+    MnarSuspected = "mnar_suspected"  # non-trivial null rate (>5 %)
+    RecentDateMissing = "recent_date_missing"  # last 10 % of expected range is sparse
+
+
+# ---------------------------------------------------------------------------
+# Temporal signal audit
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class TemporalSignals:
+    """
+    Flags which time-derived features are extractable from this column.
+
+    These are signals to guide Phase 3/5 feature engineering — no features
+    are created here.
+
+    Attributes
+    ----------
+    has_year       : bool  – year varies across rows
+    has_month      : bool  – month varies across rows
+    has_day        : bool  – day-of-month varies across rows
+    has_day_of_week: bool  – day-of-week varies (only meaningful for daily+)
+    has_hour       : bool  – non-zero hour values present
+    has_is_weekend : bool  – weekend signal (True when has_day_of_week is True)
+    has_is_month_end: bool – any values fall on the last day of their month
+    """
+
+    has_year: bool = False
+    has_month: bool = False
+    has_day: bool = False
+    has_day_of_week: bool = False
+    has_hour: bool = False
+    has_is_weekend: bool = False
+    has_is_month_end: bool = False
+
+    def extractable_features(self) -> list[str]:
+        """Return names of features worth extracting downstream."""
+        features = []
+        if self.has_year:
+            features.append("year")
+        if self.has_month:
+            features.append("month")
+        if self.has_day:
+            features.append("day_of_month")
+        if self.has_day_of_week:
+            features.append("day_of_week")
+        if self.has_hour:
+            features.append("hour")
+        if self.has_is_weekend:
+            features.append("is_weekend")
+        if self.has_is_month_end:
+            features.append("is_month_end")
+        return features
 
 
 @dataclass
@@ -117,11 +281,15 @@ class DatetimeStats:
     min_date: Optional[str] = None
     max_date: Optional[str] = None
     date_range_days: Optional[float] = None
-    null_rate: float = 0.0
     future_date_count: int = 0
-    has_recent_sparsity: bool = False
-    inferred_granularity: Optional[str] = None
-    temporal_signal: Optional[str] = None
+    inferred_granularity: Optional[InferredGranularity] = None
+    median_gap_seconds: Optional[float] = None
+    gap_cv: Optional[float] = None
+    signals: TemporalSignals = field(default_factory=TemporalSignals)
+    flags: list[DatetimeFlag] = field(default_factory=list)
+
+    def has_flag(self, flag: DatetimeFlag) -> bool:
+        return flag in self.flags
 
 
 @dataclass
@@ -160,10 +328,10 @@ class ColumnProfile:
     type_flags: list[TypeFlag] = field(default_factory=list)
     original_dtype: str = ""
     inferred_dtype: str = ""
-    is_target: bool = False
     missingness: Optional[ColumnMissingnessProfile] = field(
         default_factory=ColumnMissingnessProfile
     )
+    is_target: bool = False
     stats: Optional[AnyStats] = None
 
 
@@ -206,7 +374,9 @@ class DatasetStats:
     overall_sparsity: float = 0.0
     was_chunked: bool = False
     missingness_matrix: Optional[dict[str, dict[str, float]]] = None
-    correlation: Optional[dict[str, dict[str, float]]] = None
+    correlation: CorrelationProfileResult = field(
+        default_factory=CorrelationProfileResult,
+    )
     row_distribution: RowMissingnessDistribution = field(
         default_factory=RowMissingnessDistribution
     )
@@ -216,6 +386,7 @@ class DatasetStats:
 class StructuralProfileResult:
     columns: dict[str, ColumnProfile] = field(default_factory=dict)
     dataset: DatasetStats = field(default_factory=DatasetStats)
+    targets: dict[str, TargetProfileResult] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -249,7 +420,7 @@ class ProfileConfig:
     """
 
     modality: Modality = Modality.Tabular
-    target_column: Optional[str] = None
+    target_columns: list[str] = field(default_factory=list)
     column_overrides: dict[str, SemanticType] = field(default_factory=dict)
     exclude_columns: list[str] = field(default_factory=list)
     compute_correlation: bool = False
@@ -260,7 +431,7 @@ class ProfileConfig:
     def to_dict(self) -> dict:
         return {
             "modality": str(self.modality),
-            "target_column": self.target_column,
+            "target_columns": list(self.target_columns),
             "column_overrides": {k: str(v) for k, v in self.column_overrides.items()},
             "exclude_columns": list(self.exclude_columns),
             "compute_correlation": self.compute_correlation,
@@ -295,6 +466,7 @@ class ProfileConfig:
 # ---------------------------------------------------------------------------
 # Legacy result types — used by old profilers pending redesign
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class ColumnMissingness:

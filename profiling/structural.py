@@ -1,58 +1,41 @@
 """
 StructuralProfiler  –  unified Phase 1 entry point.
-
-Orchestrates TabularProfiler and (optionally) CategoricalProfiler,
-returning a single StructuralProfileResult that contains both.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Optional
+import math
+from typing import Any
 
 import polars as pl
-import math
 
 from ._tabular import TabularProfiler
 from ._categorical import CategoricalProfiler
+from ._datetime_profiler import DatetimeProfiler
 from .config import (
     ProfileConfig,
     ColumnProfile,
-    DatasetStats,
     StructuralProfileResult,
     RowMissingnessDistribution,
     SemanticType,
-    Modality
+    Modality,
 )
-from ._categorical_config import CategoricalProfileResult
-from ._numeric_config import NumericProfileResult
 from ._numeric_profiler import NumericProfiler
 from ._missingness_profiler import MissingnessProfiler
-from ._missingness_config import MissingnessProfileResult
-from ._target_config import TargetProfileResult
 from ._target_profiler import TargetProfiler
 from ._correlation_profiler import CorrelationProfiler
-from ._correlation_config import CorrelationProfileResult
+
+# REMOVE: these result type imports were unused in the orchestrator
+# from ._categorical_config import CategoricalProfileResult
+# from ._numeric_config import NumericProfileResult
+# from ._missingness_config import MissingnessProfileResult
+# from ._target_config import TargetProfileResult
+# from ._correlation_config import CorrelationProfileResult
 
 _ROW_DROP_THRESHOLD = 0.50
 
 
 class StructuralProfiler:
-    """
-    Single entry point for Phase 1 structural profiling.
-
-    Usage
-    -----
-    >>> cfg = ProfileConfig(
-    ...     duplicate_columns=["user_id", "event_time"],
-    ...     type_detection_columns=["age", "income"],
-    ...     categorical_columns=["status", "country"],
-    ... )
-    >>> profiler = StructuralProfiler(config=cfg)
-    >>> result = profiler.profile(df)
-    >>> print(result.tabular.duplicate_ratio)
-    >>> print(result.categorical.columns["status"].cardinality)
-    """
 
     def __init__(self, config: ProfileConfig | None = None) -> None:
         self.config = config or ProfileConfig()
@@ -60,7 +43,9 @@ class StructuralProfiler:
         if self.config.modality == Modality.Tabular:
             self.modality_profiler = TabularProfiler(self.config)
         else:
-            raise NotImplementedError(f"modality {self.config.modality} not supported yet")
+            raise NotImplementedError(
+                f"modality {self.config.modality} not supported yet"
+            )
 
     def profile(self, data: Any) -> StructuralProfileResult:
         if not isinstance(data, pl.DataFrame):
@@ -71,22 +56,24 @@ class StructuralProfiler:
 
         result = StructuralProfileResult()
 
+        active_cols = [c for c in data.columns if c not in self.config.exclude_columns]
+
         dataset_stats = self.modality_profiler.profile(data)
         result.dataset = dataset_stats
 
-        missingness_result = MissingnessProfiler(config=self.config).profile(data)
+        missingness_result = MissingnessProfiler(config=self.config).profile(
+            data, columns=active_cols
+        )
 
         for col_name in missingness_result.analysed_columns:
-            col_profile = result.columns.setdefault(
-                col_name,
-                ColumnProfile(name=col_name),
-            )
-            col_profile.missingness = missingness_result.columns.get(col_name)
+            result.columns.setdefault(
+                col_name, ColumnProfile(name=col_name)
+            ).missingness = missingness_result.columns.get(col_name)
 
         if missingness_result.correlation_matrix:
             result.dataset.missingness_matrix = missingness_result.correlation_matrix
 
-        active_cols = missingness_result.analysed_columns
+        # ── 4. Row-missingness distribution ─────────────────────────────
         result.dataset.row_distribution = self._compute_row_distribution(
             df=data,
             cols=active_cols,
@@ -94,7 +81,56 @@ class StructuralProfiler:
             overrides=self.config.column_overrides,
         )
 
+        for profiler in [
+            NumericProfiler(config=self.config),
+            CategoricalProfiler(config=self.config),
+            DatetimeProfiler(config=self.config),
+        ]:
+            sub_result = profiler.profile(data, columns=active_cols)
+            for col_name, col_stats in sub_result.columns.items():
+                result.columns.setdefault(
+                    col_name, ColumnProfile(name=col_name)
+                ).stats = col_stats
+
+        if self.config.target_columns is not None:
+            for target in self.config.target_columns:
+                if target not in data.columns:
+                    continue
+
+                target_result = TargetProfiler(
+                    target_column=target,
+                    config=self.config,
+                ).profile(data)
+
+                result.targets[target] = target_result
+
+                col_profile = result.columns.setdefault(
+                    target,
+                    ColumnProfile(name=target),
+                )
+                col_profile.is_target = True
+
+                if target_result.numeric_profile is not None:
+                    col_profile.stats = target_result.numeric_profile
+                elif target_result.categorical_profile is not None:
+                    col_profile.stats = target_result.categorical_profile
+
+        # ── 7. Correlation ───────────────────────────────────────────────
+        # CHANGE: was never called before.
+        if self.config.compute_correlation:
+            corr_result = CorrelationProfiler(
+                numeric_columns=active_cols,
+                categorical_columns=active_cols,
+                target_column=self.config.correlation_target_column,
+                config=self.config,
+            ).profile(data)
+            result.dataset.correlation = corr_result
+
         return result
+
+    # ------------------------------------------------------------------
+    # Row-missingness distribution — unchanged
+    # ------------------------------------------------------------------
 
     @staticmethod
     def _compute_row_distribution(

@@ -6,16 +6,16 @@ Eligibility model
 Effective-null detection is based on **dtype first**, with SemanticType
 overrides acting only as suppressors, not as enablers:
 
-  sentinel-string detection  →  runs when dtype is Utf8/String
-                                 suppressed if override is Numeric / Datetime / Boolean
-                                 (those types cannot have meaningful sentinel strings)
+sentinel-string detection  →  runs when dtype is Utf8/String
+                                suppressed if override is Numeric / Datetime / Boolean
+                                (those types cannot have meaningful sentinel strings)
 
-  Inf / NaN expansion        →  runs when dtype is Float32/Float64
-                                 never suppressed (Inf in a float column is always
-                                 effectively missing regardless of semantic label)
+Inf / NaN expansion        →  runs when dtype is Float32/Float64
+                                never suppressed (Inf in a float column is always
+                                effectively missing regardless of semantic label)
 
-  column_overrides is SPARSE — most columns will have no entry.
-  Absence of an override is not a signal; it means "trust the dtype".
+column_overrides is SPARSE — most columns will have no entry.
+Absence of an override is not a signal; it means "trust the dtype".
 """
 
 from __future__ import annotations
@@ -60,9 +60,7 @@ _SENTINEL_SUPPRESSING_SEMANTICS = frozenset(
 )
 
 
-def _sentinel_eligible(
-    dtype: pl.datatypes.DataType, override: SemanticType | None
-) -> bool:
+def _sentinel_eligible(dtype: pl.DataType, override: SemanticType | None) -> bool:
     """True when sentinel-string detection should run for this column."""
     if dtype not in (pl.Utf8, pl.String):
         return False
@@ -72,7 +70,7 @@ def _sentinel_eligible(
     return True
 
 
-def _inf_eligible(dtype: pl.datatypes.DataType) -> bool:
+def _inf_eligible(dtype: pl.DataType) -> bool:
     """True when Inf/NaN expansion should run. Always dtype-driven, never suppressed."""
     return dtype in (pl.Float32, pl.Float64)
 
@@ -107,22 +105,12 @@ class MissingnessProfiler(Profiling[MissingnessProfileResult]):
                 f"MissingnessProfiler expects a Polars DataFrame, "
                 f"got {type(data).__name__}."
             )
-        cols = self._resolve_scope(data.columns, columns)
-        return self._run(data, cols)
+
+        return self._run(data, columns)
 
     # ------------------------------------------------------------------
     # Scope resolution
     # ------------------------------------------------------------------
-
-    def _resolve_scope(
-        self,
-        all_columns: list[str],
-        requested: list[str] | None,
-    ) -> list[str]:
-        excluded = set(self._config.exclude_columns)
-        all_set = set(all_columns)
-        base = requested if requested is not None else all_columns
-        return [c for c in base if c not in excluded and c in all_set]
 
     # ------------------------------------------------------------------
     # Orchestration
@@ -180,7 +168,6 @@ class MissingnessProfiler(Profiling[MissingnessProfileResult]):
                     result.columns[col_a].correlated_with = mar_peers
                     if MissingnessFlag.MARSuspect not in result.columns[col_a].flags:
                         result.columns[col_a].flags.append(MissingnessFlag.MARSuspect)
-
 
         return result
 

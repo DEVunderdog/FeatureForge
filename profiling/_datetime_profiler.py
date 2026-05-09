@@ -38,21 +38,22 @@ Attach ``dt_result`` to ``StructuralProfileResult`` as
 
 from __future__ import annotations
 
-import warnings
 from datetime import datetime, timezone
 from typing import Any
 
 import polars as pl
 
-from ..models._data_structure import DataStructure
 from ._base import Profiling
-from .config import ProfileConfig
-from ._datetime_config import (
-    ColumnDatetimeProfile,
-    DatetimeFlag,
-    DatetimeProfileResult,
+from .config import (
+    ProfileConfig,
+    DatetimeStats,
     InferredGranularity,
+    DatetimeFlag,
     TemporalSignals,
+    SemanticType,
+)
+from ._datetime_config import (
+    DatetimeProfileResult,
 )
 
 # ---------------------------------------------------------------------------
@@ -68,20 +69,17 @@ _HIGH_GAP_CV_THRESHOLD: float = 1.0
 # Granularity bands — upper bound (exclusive) in seconds for each label
 # Ordered from finest to coarsest.
 _GRANULARITY_BANDS: list[tuple[float, InferredGranularity]] = [
-    (90.0,          InferredGranularity.Secondly),   # < 1.5 min
-    (3_600.0,       InferredGranularity.Minutely),   # < 1 h
-    (7_200.0,       InferredGranularity.Hourly),     # < 2 h
-    (172_800.0,     InferredGranularity.Daily),      # < 2 days
-    (1_209_600.0,   InferredGranularity.Weekly),     # < 14 days
-    (5_184_000.0,   InferredGranularity.Monthly),    # < 60 days
+    (90.0, InferredGranularity.Secondly),  # < 1.5 min
+    (3_600.0, InferredGranularity.Minutely),  # < 1 h
+    (7_200.0, InferredGranularity.Hourly),  # < 2 h
+    (172_800.0, InferredGranularity.Daily),  # < 2 days
+    (1_209_600.0, InferredGranularity.Weekly),  # < 14 days
+    (5_184_000.0, InferredGranularity.Monthly),  # < 60 days
 ]
 # Anything ≥ 5_184_000 s → Yearly
 
 # Recent-data sparsity: consider the last this-fraction of the total range
 _RECENT_WINDOW_FRACTION: float = 0.10
-
-# Accepted Polars datetime-like dtypes
-_DATETIME_DTYPES = {pl.Date, pl.Datetime}
 
 
 def _is_datetime_dtype(dtype: pl.DataType) -> bool:
@@ -103,61 +101,68 @@ class DatetimeProfiler(Profiling[DatetimeProfileResult]):
 
     def __init__(
         self,
-        columns: list[str],
         config: ProfileConfig | None = None,
     ) -> None:
-        super().__init__(DataStructure.Tabular, config)
-        self._requested_columns = columns
+        super().__init__(config)
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    def profile(self, data: Any) -> DatetimeProfileResult:
+    def profile(
+        self,
+        data: Any,
+        columns: list[str],
+    ) -> DatetimeProfileResult:
         if not isinstance(data, pl.DataFrame):
             raise TypeError(
                 f"DatetimeProfiler expects a Polars DataFrame, "
                 f"got {type(data).__name__}."
             )
-        return self._run(data)
+        return self._run(data, columns)
 
     # ------------------------------------------------------------------
     # Orchestration
     # ------------------------------------------------------------------
 
-    def _run(self, df: pl.DataFrame) -> DatetimeProfileResult:
+    def _eligible(self, series: pl.Series) -> bool:
+        override = self.config.column_overrides.get(series.name)
+
+        if override == SemanticType.Datetime:
+            return True
+        if override is not None:
+            return False
+
+        return _is_datetime_dtype(series.dtype) or series.dtype in (pl.Utf8, pl.String)
+
+    def _coerce_to_datetime(self, series: pl.Series) -> pl.Series | None:
+        if series.dtype in (pl.Utf8, pl.String):
+            coerced = series.str.to_datetime(strict=False)
+            return coerced if coerced.drop_nulls().len() > 0 else None
+        return series
+
+    def _run(self, df: pl.DataFrame, columns: list[str]) -> DatetimeProfileResult:
         result = DatetimeProfileResult()
-
-        available = self._resolve_columns(df.columns, self._requested_columns)
-        result.analysed_columns = available
-
-        n_rows = df.height
         now = datetime.now(tz=timezone.utc)
 
+        candidates = [
+            c
+            for c in self._resolve_columns(df.columns, columns)
+            if self._eligible(df[c])
+        ]
+
+        available = []
+        coerced_cache = {}
+        for col_name in candidates:
+            series = self._coerce_to_datetime(df[col_name])
+            if series is not None:
+                available.append(col_name)
+                coerced_cache[col_name] = series
+
+        result.analysed_columns = available
+
         for col_name in available:
-            series = df[col_name]
-
-            # Attempt coercion for Utf8 columns not yet cast
-            if series.dtype in (pl.Utf8, pl.String):
-                coerced = series.str.to_datetime(strict=False)
-                non_null_after = coerced.drop_nulls().len()
-                if non_null_after == 0:
-                    warnings.warn(
-                        f"DatetimeProfiler: column '{col_name}' could not be "
-                        f"coerced to datetime — skipping.",
-                        stacklevel=2,
-                    )
-                    continue
-                series = coerced
-            elif not _is_datetime_dtype(series.dtype):
-                warnings.warn(
-                    f"DatetimeProfiler: column '{col_name}' has dtype "
-                    f"{series.dtype!s}, which is not a datetime type — skipping.",
-                    stacklevel=2,
-                )
-                continue
-
-            profile = self._profile_column(series, col_name, n_rows, now)
+            profile = self._profile_column(coerced_cache[col_name], df.height, now)
             result.columns[col_name] = profile
 
         return result
@@ -169,11 +174,10 @@ class DatetimeProfiler(Profiling[DatetimeProfileResult]):
     def _profile_column(
         self,
         series: pl.Series,
-        col_name: str,
         n_rows: int,
         now: datetime,
-    ) -> ColumnDatetimeProfile:
-        profile = ColumnDatetimeProfile(column=col_name, total_rows=n_rows)
+    ) -> DatetimeStats:
+        profile = DatetimeStats()
 
         # Normalise to microsecond Datetime (UTC) for uniform arithmetic
         # Date columns are cast to Datetime at midnight UTC.
@@ -184,9 +188,6 @@ class DatetimeProfiler(Profiling[DatetimeProfileResult]):
                 series = series.dt.replace_time_zone("UTC")
             else:
                 series = series.dt.convert_time_zone("UTC")
-
-        # 1. Missingness
-        self._compute_missingness(series, profile, n_rows)
 
         # Drop nulls for all remaining computations
         clean = series.drop_nulls()
@@ -201,7 +202,7 @@ class DatetimeProfiler(Profiling[DatetimeProfileResult]):
         self._check_future_dates(clean, profile, now)
 
         # 4. Recent data sparsity (needs range, so after _compute_range)
-        self._check_recent_data_missing(series, profile, n_rows)
+        self._check_recent_date_missing(series, profile, n_rows)
 
         # 5. Granularity
         self._infer_granularity(clean, profile)
@@ -212,42 +213,33 @@ class DatetimeProfiler(Profiling[DatetimeProfileResult]):
         return profile
 
     # ------------------------------------------------------------------
-    # Step 1: Missingness
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _compute_missingness(
-        series: pl.Series,
-        profile: ColumnDatetimeProfile,
-        n_rows: int,
-    ) -> None:
-        null_count = series.null_count()
-        profile.null_count = null_count
-        profile.null_ratio = null_count / n_rows if n_rows > 0 else 0.0
-
-        if profile.null_ratio > _MNAR_NULL_RATIO_THRESHOLD:
-            profile.flags.append(DatetimeFlag.MnarSuspected)
-
-    # ------------------------------------------------------------------
     # Step 2: Range
     # ------------------------------------------------------------------
 
     @staticmethod
     def _compute_range(
         clean: pl.Series,
-        profile: ColumnDatetimeProfile,
+        profile: DatetimeStats,
     ) -> None:
         min_ts = clean.min()
         max_ts = clean.max()
 
         if min_ts is not None:
-            profile.min_date = min_ts.replace(tzinfo=timezone.utc) if isinstance(min_ts, datetime) else min_ts
+            profile.min_date = (
+                min_ts.replace(tzinfo=timezone.utc)
+                if isinstance(min_ts, datetime)
+                else min_ts
+            )
         if max_ts is not None:
-            profile.max_date = max_ts.replace(tzinfo=timezone.utc) if isinstance(max_ts, datetime) else max_ts
+            profile.max_date = (
+                max_ts.replace(tzinfo=timezone.utc)
+                if isinstance(max_ts, datetime)
+                else max_ts
+            )
 
         if profile.min_date is not None and profile.max_date is not None:
             delta = profile.max_date - profile.min_date
-            profile.range_days = delta.total_seconds() / 86_400.0
+            profile.date_range_days = delta.total_seconds() / 86_400.0
 
     # ------------------------------------------------------------------
     # Step 3: Future dates
@@ -256,7 +248,7 @@ class DatetimeProfiler(Profiling[DatetimeProfileResult]):
     @staticmethod
     def _check_future_dates(
         clean: pl.Series,
-        profile: ColumnDatetimeProfile,
+        profile: DatetimeStats,
         now: datetime,
     ) -> None:
         # Cast to Int64 (epoch microseconds) and compare against now scalar
@@ -268,20 +260,15 @@ class DatetimeProfiler(Profiling[DatetimeProfileResult]):
         profile.future_date_count = future_count
         if future_count > 0:
             profile.flags.append(DatetimeFlag.FutureDates)
-            profile.future_date_context = (
-                "Future dates detected. May indicate data entry error "
-                "in historical datasets, or valid scheduled/booking records."
-            )
 
     # ------------------------------------------------------------------
     # Step 3b: Recent data sparsity
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _check_recent_data_missing(
+    def _check_recent_date_missing(
         series: pl.Series,
-        profile: ColumnDatetimeProfile,
-        n_rows: int,
+        profile: DatetimeStats,
     ) -> None:
         """
         Flag when the last _RECENT_WINDOW_FRACTION of the expected date
@@ -292,10 +279,10 @@ class DatetimeProfiler(Profiling[DatetimeProfileResult]):
         """
         if profile.min_date is None or profile.max_date is None:
             return
-        if profile.range_days is None or profile.range_days == 0:
+        if profile.date_range_days is None or profile.date_range_days == 0:
             return
 
-        range_seconds = profile.range_days * 86_400.0
+        range_seconds = profile.date_range_days * 86_400.0
         window_seconds = range_seconds * _RECENT_WINDOW_FRACTION
 
         # Compute cutoff as epoch microseconds
@@ -316,7 +303,7 @@ class DatetimeProfiler(Profiling[DatetimeProfileResult]):
         density_ratio = recent_count / expected_recent if expected_recent > 0 else 1.0
 
         if density_ratio < 0.20:
-            profile.flags.append(DatetimeFlag.RecentDataMissing)
+            profile.flags.append(DatetimeFlag.RecentDateMissing)
 
     # ------------------------------------------------------------------
     # Step 4: Granularity inference
@@ -325,7 +312,7 @@ class DatetimeProfiler(Profiling[DatetimeProfileResult]):
     @staticmethod
     def _infer_granularity(
         clean: pl.Series,
-        profile: ColumnDatetimeProfile,
+        profile: DatetimeStats,
     ) -> None:
         """
         Sort values, compute consecutive gaps in seconds, derive median gap.
@@ -350,8 +337,8 @@ class DatetimeProfiler(Profiling[DatetimeProfileResult]):
         gaps_s = gaps_us.cast(pl.Float64) / 1_000_000.0  # → seconds
 
         median_gap_s = float(gaps_s.median())  # type: ignore[arg-type]
-        mean_gap_s   = float(gaps_s.mean())    # type: ignore[arg-type]
-        std_gap_s    = float(gaps_s.std(ddof=1)) if gaps_s.len() > 1 else 0.0
+        mean_gap_s = float(gaps_s.mean())  # type: ignore[arg-type]
+        std_gap_s = float(gaps_s.std(ddof=1)) if gaps_s.len() > 1 else 0.0
 
         profile.median_gap_seconds = median_gap_s
 
@@ -379,7 +366,7 @@ class DatetimeProfiler(Profiling[DatetimeProfileResult]):
     @staticmethod
     def _audit_temporal_signals(
         clean: pl.Series,
-        profile: ColumnDatetimeProfile,
+        profile: DatetimeStats,
     ) -> None:
         """
         Check which temporal features vary across rows
@@ -389,17 +376,17 @@ class DatetimeProfiler(Profiling[DatetimeProfileResult]):
         """
         signals = TemporalSignals()
 
-        years   = clean.dt.year()
-        months  = clean.dt.month()
-        days    = clean.dt.day()
-        dow     = clean.dt.weekday()   # 0=Monday … 6=Sunday
-        hours   = clean.dt.hour()
+        years = clean.dt.year()
+        months = clean.dt.month()
+        days = clean.dt.day()
+        dow = clean.dt.weekday()  # 0=Monday … 6=Sunday
+        hours = clean.dt.hour()
 
-        signals.has_year        = years.n_unique() > 1
-        signals.has_month       = months.n_unique() > 1
-        signals.has_day         = days.n_unique() > 1
+        signals.has_year = years.n_unique() > 1
+        signals.has_month = months.n_unique() > 1
+        signals.has_day = days.n_unique() > 1
         signals.has_day_of_week = dow.n_unique() > 1
-        signals.has_hour        = int(hours.max()) > 0  # type: ignore[arg-type]
+        signals.has_hour = int(hours.max()) > 0  # type: ignore[arg-type]
 
         # Weekend signal is only meaningful when day-of-week varies
         if signals.has_day_of_week:
@@ -413,15 +400,13 @@ class DatetimeProfiler(Profiling[DatetimeProfileResult]):
             month_end_ts = clean.dt.month_end()
             # Strip time component for date-level comparison
             is_month_end_mask = (
-                clean.dt.year()  == month_end_ts.dt.year()
-            ) & (
-                clean.dt.month() == month_end_ts.dt.month()
-            ) & (
-                clean.dt.day()   == month_end_ts.dt.day()
+                (clean.dt.year() == month_end_ts.dt.year())
+                & (clean.dt.month() == month_end_ts.dt.month())
+                & (clean.dt.day() == month_end_ts.dt.day())
             )
             signals.has_is_month_end = bool(is_month_end_mask.any())
         except Exception:
             # Fallback: flag if day ≥ 28
-            signals.has_is_month_end = bool((days >= 28).any())
+            signals.has_is_month_end = False
 
         profile.signals = signals
