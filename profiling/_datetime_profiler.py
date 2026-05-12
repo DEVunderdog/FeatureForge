@@ -196,7 +196,7 @@ class DatetimeProfiler(ColumnBatchProfiler[DatetimeProfileResult]):
         self._check_future_dates(clean, profile, now)
 
         # 4. Recent data sparsity (needs range, so after _compute_range)
-        self._check_recent_date_missing(series, profile, n_rows)
+        self._check_recent_date_missing(series, profile)
 
         # 5. Granularity
         self._infer_granularity(clean, profile)

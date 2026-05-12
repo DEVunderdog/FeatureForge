@@ -3,6 +3,18 @@ import pytest
 
 
 @pytest.fixture(scope="session")
+def text_df():
+    n = 200
+    topics = ["science", "art", "history", "technology", "nature", "music"]
+    texts = [
+        f"A detailed description covering the topic of {topics[i % len(topics)]} "
+        f"with multiple words that comfortably exceed the free-text threshold in row {i}"
+        for i in range(n)
+    ]
+    return pl.DataFrame({"review": pl.Series(texts, dtype=pl.Utf8)})
+
+
+@pytest.fixture(scope="session")
 def mixed_df(rng):
     n = 300
 
