@@ -8,3 +8,4 @@ logs
 *.py[cod]
 *$py.class
 .claude
+FeatureForge.egg-info

@@ -46,14 +46,14 @@ import polars as pl
 from ._base import Profiling
 from .config import (
     ProfileConfig,
-    DatetimeStats,
-    InferredGranularity,
-    DatetimeFlag,
-    TemporalSignals,
     SemanticType,
 )
 from ._datetime_config import (
     DatetimeProfileResult,
+    DatetimeStats,
+    InferredGranularity,
+    DatetimeFlag,
+    TemporalSignals,
 )
 
 # ---------------------------------------------------------------------------

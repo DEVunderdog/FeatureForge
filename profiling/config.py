@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Optional, Union, List
+from typing import Optional, Union
 
 from ._missingness_config import (
     ColumnMissingnessProfile,
@@ -18,6 +18,17 @@ from ._missingness_config import (
 from ._correlation_config import (
     CorrelationProfileResult,
 )
+from ._categorical_config import (
+    CategoricalStats,
+)
+from ._numeric_config import (
+    NumericStats,
+)
+from ._datetime_config import (
+    DatetimeStats,
+)
+from ._boolean_config import BooleanStats
+from ._text_config import TextStats
 from ._target_config import TargetProfileResult
 
 # ---------------------------------------------------------------------------
@@ -60,258 +71,6 @@ class TypeFlag(StrEnum):
     SequentialIndex = "sequential_index"
     FloatSequentialIndex = "float_sequential_index"
     FreeTextCandidate = "free_text_candidate"
-
-
-# ---------------------------------------------------------------------------
-# Stats dataclasses
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class PercentileSnapshot:
-    p1: Optional[float] = None
-    p5: Optional[float] = None
-    p25: Optional[float] = None
-    p50: Optional[float] = None
-    p75: Optional[float] = None
-    p95: Optional[float] = None
-    p99: Optional[float] = None
-
-    @property
-    def iqr(self) -> Optional[float]:
-        if self.p25 is not None and self.p75 is not None:
-            return self.p75 - self.p25
-        return None
-
-
-class SkewSeverity(StrEnum):
-    Normal = "normal"  # |skew| <= 0.5
-    Moderate = "moderate"  # 0.5 < |skew| <= 1.0
-    High = "high"  # 1.0 < |skew| <= 2.0
-    Severe = "severe"  # |skew| > 2.0
-
-
-class KurtosisTag(StrEnum):
-    Platykurtic = "platykurtic"  # excess kurtosis < -1  (thin tails)
-    Mesokurtic = "mesokurtic"  # -1 <= excess <= 3     (near-normal)
-    Leptokurtic = "leptokurtic"  # excess kurtosis > 3   (heavy tails)
-
-
-class NumericFlag(StrEnum):
-    ScaleAnomaly = "scale_anomaly"  # values span 3+ orders of magnitude
-    NearConstant = "near_constant"
-
-
-@dataclass
-class NumericTopValueEntry:
-    value: float
-    count: int
-    percentage: float
-
-
-@dataclass
-class HistogramBin:
-    lower_bound: float
-    upper_bound: float
-    count: int
-    percentage: float
-
-
-@dataclass
-class NumericStats:
-    mean: Optional[float] = None
-    median: Optional[float] = None
-    mean_median_ratio: Optional[float] = None
-
-    mode: Optional[float] = None
-    mode_frequency: float = 0.0
-    top_values: list[NumericTopValueEntry] = field(default_factory=list)
-    histogram: list[HistogramBin] = field(default_factory=list)
-
-    std: Optional[float] = None
-    variance: Optional[float] = None
-    min: Optional[float] = None
-    max: Optional[float] = None
-
-    percentiles: PercentileSnapshot = field(default_factory=PercentileSnapshot)
-    skewness: Optional[float] = None
-    kurtosis: Optional[float] = None
-    skewness_severity: Optional[SkewSeverity] = None
-    kurtosis_tag: Optional[KurtosisTag] = None
-
-    flags: List[NumericFlag] = field(default_factory=list)
-
-    @property
-    def iqr(self) -> Optional[float]:
-        return self.percentiles.iqr
-
-    def has_flag(self, flag: NumericFlag) -> bool:
-        return flag in self.flags
-
-
-class CategoricalFlag(StrEnum):
-    MixedType = "mixed_type"
-    FreeText = "free_text"
-    NearConstant = "near_constant"
-
-
-@dataclass
-class TopValueEntry:
-    """One entry in the top-N value counts list."""
-
-    value: object
-    count: int
-    percentage: float  # fraction of total rows (0–1)
-
-
-@dataclass
-class RareCategoryStats:
-    """
-    Summary of low-frequency categories.
-
-    Threshold used: categories whose row count < 1 % of total rows.
-    """
-
-    threshold_pct: float  # always 0.01
-    rare_category_count: int = 0  # distinct categories below threshold
-    total_rare_rows: int = 0  # rows belonging to rare categories
-    rare_row_percentage: float = 0.0  # total_rare_rows / row_count
-
-
-@dataclass
-class ImbalanceMetrics:
-    """
-    Three complementary measures of class-distribution skew.
-
-    class_ratio  : max_freq / min_freq  (>10 is a red flag)
-    shannon_entropy : -Σ p·log₂(p)     (0 = fully concentrated)
-    gini_impurity   : 1 - Σ p²         (0 = perfectly pure)
-    """
-
-    class_ratio: float = 0.0
-    shannon_entropy: float = 0.0
-    gini_impurity: float = 0.0
-
-
-@dataclass
-class CategoricalStats:
-    cardinality: int = 0
-    unique_ratio: float = 0.0
-    mode_frequency: float = 0.0
-    top_values: list[TopValueEntry] = field(default_factory=list)
-    rare_categories: RareCategoryStats = field(
-        default_factory=lambda: RareCategoryStats(threshold_pct=0.01),
-    )
-    imbalance: ImbalanceMetrics = field(default_factory=ImbalanceMetrics)
-    flags: list[CategoricalFlag] = field(default_factory=list)
-
-
-class InferredGranularity(StrEnum):
-    Yearly = "yearly"  # median gap ≈ 365 days
-    Monthly = "monthly"  # median gap ≈ 30 days
-    Weekly = "weekly"  # median gap ≈ 7 days
-    Daily = "daily"  # median gap ≈ 1 day
-    Hourly = "hourly"  # median gap ≈ 1 hour
-    Minutely = "minutely"  # median gap ≈ 1 minute
-    Secondly = "secondly"  # median gap < 1 minute
-    Irregular = "irregular"  # no dominant periodicity
-
-
-class DatetimeFlag(StrEnum):
-    FutureDates = "future_dates"  # values > current date found
-    HighGapVariance = "high_gap_variance"  # coefficient of variation > 1.0
-    MnarSuspected = "mnar_suspected"  # non-trivial null rate (>5 %)
-    RecentDateMissing = "recent_date_missing"  # last 10 % of expected range is sparse
-
-
-# ---------------------------------------------------------------------------
-# Temporal signal audit
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class TemporalSignals:
-    """
-    Flags which time-derived features are extractable from this column.
-
-    These are signals to guide Phase 3/5 feature engineering — no features
-    are created here.
-
-    Attributes
-    ----------
-    has_year       : bool  – year varies across rows
-    has_month      : bool  – month varies across rows
-    has_day        : bool  – day-of-month varies across rows
-    has_day_of_week: bool  – day-of-week varies (only meaningful for daily+)
-    has_hour       : bool  – non-zero hour values present
-    has_is_weekend : bool  – weekend signal (True when has_day_of_week is True)
-    has_is_month_end: bool – any values fall on the last day of their month
-    """
-
-    has_year: bool = False
-    has_month: bool = False
-    has_day: bool = False
-    has_day_of_week: bool = False
-    has_hour: bool = False
-    has_is_weekend: bool = False
-    has_is_month_end: bool = False
-
-    def extractable_features(self) -> list[str]:
-        """Return names of features worth extracting downstream."""
-        features = []
-        if self.has_year:
-            features.append("year")
-        if self.has_month:
-            features.append("month")
-        if self.has_day:
-            features.append("day_of_month")
-        if self.has_day_of_week:
-            features.append("day_of_week")
-        if self.has_hour:
-            features.append("hour")
-        if self.has_is_weekend:
-            features.append("is_weekend")
-        if self.has_is_month_end:
-            features.append("is_month_end")
-        return features
-
-
-@dataclass
-class DatetimeStats:
-    min_date: Optional[str] = None
-    max_date: Optional[str] = None
-    date_range_days: Optional[float] = None
-    future_date_count: int = 0
-    inferred_granularity: Optional[InferredGranularity] = None
-    median_gap_seconds: Optional[float] = None
-    gap_cv: Optional[float] = None
-    signals: TemporalSignals = field(default_factory=TemporalSignals)
-    flags: list[DatetimeFlag] = field(default_factory=list)
-
-    def has_flag(self, flag: DatetimeFlag) -> bool:
-        return flag in self.flags
-
-
-@dataclass
-class BooleanStats:
-    true_count: int = 0
-    false_count: int = 0
-    true_ratio: float = 0.0
-    false_ratio: float = 0.0
-    mode: Optional[bool] = None
-
-
-@dataclass
-class TextStats:
-    avg_token_count: float = 0.0
-    median_token_count: float = 0.0
-    vocabulary_size: int = 0
-    char_length_min: int = 0
-    char_length_max: int = 0
-    char_length_mean: float = 0.0
-    char_length_median: float = 0.0
-    empty_ratio: float = 0.0
-    whitespace_ratio: float = 0.0
 
 
 # ---------------------------------------------------------------------------

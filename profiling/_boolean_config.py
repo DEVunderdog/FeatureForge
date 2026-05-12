@@ -7,7 +7,16 @@ Populated by BooleanProfiler.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from .config import BooleanStats
+from typing import Optional
+
+
+@dataclass
+class BooleanStats:
+    true_count: int = 0
+    false_count: int = 0
+    true_ratio: float = 0.0
+    false_ratio: float = 0.0
+    mode: Optional[bool] = None
 
 
 @dataclass

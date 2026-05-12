@@ -40,14 +40,14 @@ import polars as pl
 from ._base import Profiling
 from ._categorical_config import (
     CategoricalProfileResult,
-)
-from .config import (
-    ProfileConfig,
     CategoricalStats,
     TopValueEntry,
     CategoricalFlag,
     RareCategoryStats,
     ImbalanceMetrics,
+)
+from .config import (
+    ProfileConfig,
     SemanticType,
 )
 from ..models._data_types import _CAT_DTYPES
@@ -132,9 +132,10 @@ class CategoricalProfiler(Profiling[CategoricalProfileResult]):
 
         # Resolve columns against actual schema
         available = [
-        c for c in self._resolve_columns(df.columns, columns)
-        if self._eligible(df[c])
-    ]
+            c
+            for c in self._resolve_columns(df.columns, columns)
+            if self._eligible(df[c])
+        ]
         result.analysed_columns = available
 
         n_rows = df.height

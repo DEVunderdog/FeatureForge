@@ -38,6 +38,11 @@ import polars as pl
 from ._base import Profiling
 from .config import (
     ProfileConfig,
+    SemanticType,
+)
+from ._correlation_profiler import _INT_DTYPES
+from ._numeric_config import (
+    NumericProfileResult,
     NumericStats,
     PercentileSnapshot,
     KurtosisTag,
@@ -45,11 +50,6 @@ from .config import (
     SkewSeverity,
     NumericTopValueEntry,
     HistogramBin,
-    SemanticType,
-)
-from ._correlation_profiler import _INT_DTYPES
-from ._numeric_config import (
-    NumericProfileResult,
 )
 from ..models._data_types import _NUMERIC_DTYPES
 
