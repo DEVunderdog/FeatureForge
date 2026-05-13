@@ -1,16 +1,16 @@
 """
-DataSplitter: constructor, random_split, and time_split implementation.
+DataSplitter: constructor, random_split, time_split, and kfold implementation.
 """
 
 from __future__ import annotations
 
 import math
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 import polars as pl
-from sklearn.model_selection import ShuffleSplit, StratifiedShuffleSplit
+from sklearn.model_selection import KFold, ShuffleSplit, StratifiedKFold, StratifiedShuffleSplit
 
-from ._config import SplitResult
+from ._config import FoldResult, SplitResult
 
 _UNSET = object()
 
@@ -147,3 +147,56 @@ class DataSplitter:
             train_ratio=len(train_df) / total,
             test_ratio=len(test_df) / total,
         )
+
+    def kfold(self, k: int, stratify=_UNSET) -> List[FoldResult]:
+        """
+        Return a list of ``k`` cross-validation folds.
+
+        Parameters
+        ----------
+        k : int
+            Number of folds.
+        stratify : bool, optional
+            Whether to stratify on the target column.
+            Defaults to True when a target was provided, False otherwise.
+
+        Returns
+        -------
+        list[FoldResult]
+            Exactly ``k`` folds with zero-based ``fold_index``.
+        """
+        if stratify is _UNSET:
+            stratify = self._target is not None
+        if stratify and self._target is None:
+            raise ValueError(
+                "stratify=True requires a target column; "
+                "pass target= when constructing DataSplitter"
+            )
+
+        if stratify:
+            folder = StratifiedKFold(
+                n_splits=k, shuffle=True, random_state=self._random_seed
+            )
+            y = self._df[self._target].to_numpy()
+            splits = folder.split(self._df, y)
+        else:
+            folder = KFold(
+                n_splits=k, shuffle=True, random_state=self._random_seed
+            )
+            splits = folder.split(self._df)
+
+        folds: List[FoldResult] = []
+        for fold_index, (train_idx, val_idx) in enumerate(splits):
+            train_df = self._df[train_idx]
+            val_df = self._df[val_idx]
+            folds.append(
+                FoldResult(
+                    train=train_df,
+                    val=val_df,
+                    fold_index=fold_index,
+                    train_size=len(train_df),
+                    val_size=len(val_df),
+                )
+            )
+
+        return folds

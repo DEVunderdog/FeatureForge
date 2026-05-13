@@ -2,7 +2,7 @@ import polars as pl
 import pytest
 
 from ....splitting._splitter import DataSplitter
-from ....splitting._config import SplitResult
+from ....splitting._config import FoldResult, SplitResult
 
 
 # ---------------------------------------------------------------------------
@@ -294,3 +294,124 @@ def test_cutoff_takes_priority_over_test_size(time_df, time_splitter):
     result_cutoff_only = time_splitter.time_split("date", cutoff=cutoff)
     assert result_both.test.equals(result_cutoff_only.test)
     assert result_both.train.equals(result_cutoff_only.train)
+
+
+# ---------------------------------------------------------------------------
+# kfold — fixtures
+# ---------------------------------------------------------------------------
+
+_KFOLD_N = 100
+_K = 5
+
+
+@pytest.fixture(scope="module")
+def kfold_df() -> pl.DataFrame:
+    return pl.DataFrame(
+        {
+            "feature": pl.Series(list(range(_KFOLD_N)), dtype=pl.Float64),
+            "label": pl.Series(["A" if i % 2 == 0 else "B" for i in range(_KFOLD_N)], dtype=pl.Utf8),
+        }
+    )
+
+
+@pytest.fixture(scope="module")
+def kfold_splitter(kfold_df) -> DataSplitter:
+    return DataSplitter(kfold_df, target="label", random_seed=42)
+
+
+@pytest.fixture(scope="module")
+def kfold_splitter_no_target(kfold_df) -> DataSplitter:
+    return DataSplitter(kfold_df, random_seed=42)
+
+
+# ---------------------------------------------------------------------------
+# kfold — basic structure
+# ---------------------------------------------------------------------------
+
+
+def test_kfold_returns_exactly_k_folds(kfold_splitter):
+    folds = kfold_splitter.kfold(_K)
+    assert len(folds) == _K
+
+
+def test_kfold_fold_indices_zero_to_k_minus_one(kfold_splitter):
+    folds = kfold_splitter.kfold(_K)
+    assert [f.fold_index for f in folds] == list(range(_K))
+
+
+def test_kfold_returns_fold_result_instances(kfold_splitter):
+    folds = kfold_splitter.kfold(_K)
+    assert all(isinstance(f, FoldResult) for f in folds)
+
+
+def test_kfold_sizes_sum_to_total(kfold_df, kfold_splitter):
+    folds = kfold_splitter.kfold(_K)
+    for fold in folds:
+        assert fold.train_size + fold.val_size == len(kfold_df)
+
+
+def test_kfold_dataframe_row_counts_match_sizes(kfold_splitter):
+    folds = kfold_splitter.kfold(_K)
+    for fold in folds:
+        assert len(fold.train) == fold.train_size
+        assert len(fold.val) == fold.val_size
+
+
+# ---------------------------------------------------------------------------
+# kfold — non-overlapping and complete coverage
+# ---------------------------------------------------------------------------
+
+
+def test_kfold_val_sets_non_overlapping(kfold_df, kfold_splitter):
+    folds = kfold_splitter.kfold(_K)
+    # Collect all row hashes across val sets; no duplicates allowed
+    seen = set()
+    for fold in folds:
+        for row in fold.val.iter_rows():
+            assert row not in seen, f"Row {row} appeared in multiple val sets"
+            seen.add(row)
+
+
+def test_kfold_val_sets_cover_all_rows(kfold_df, kfold_splitter):
+    folds = kfold_splitter.kfold(_K)
+    all_val_rows = set()
+    for fold in folds:
+        for row in fold.val.iter_rows():
+            all_val_rows.add(row)
+    all_df_rows = set(kfold_df.iter_rows())
+    assert all_val_rows == all_df_rows
+
+
+# ---------------------------------------------------------------------------
+# kfold — stratification
+# ---------------------------------------------------------------------------
+
+
+def test_stratified_kfold_preserves_class_ratios(kfold_splitter):
+    folds = kfold_splitter.kfold(_K, stratify=True)
+    for fold in folds:
+        counts = fold.val["label"].value_counts()["count"].to_list()
+        ratio = counts[0] / sum(counts)
+        assert abs(ratio - 0.5) < 0.15
+
+
+def test_kfold_stratify_false_produces_valid_folds(kfold_df, kfold_splitter_no_target):
+    folds = kfold_splitter_no_target.kfold(_K, stratify=False)
+    assert len(folds) == _K
+    for fold in folds:
+        assert fold.train_size + fold.val_size == len(kfold_df)
+
+
+def test_kfold_stratify_defaults_true_when_target_set(kfold_splitter):
+    folds = kfold_splitter.kfold(_K)
+    assert len(folds) == _K
+
+
+def test_kfold_stratify_defaults_false_when_no_target(kfold_df, kfold_splitter_no_target):
+    folds = kfold_splitter_no_target.kfold(_K)
+    assert len(folds) == _K
+
+
+def test_kfold_stratify_true_without_target_raises(kfold_splitter_no_target):
+    with pytest.raises(ValueError, match="target"):
+        kfold_splitter_no_target.kfold(_K, stratify=True)
