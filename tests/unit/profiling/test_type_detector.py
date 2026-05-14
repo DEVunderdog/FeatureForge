@@ -1,7 +1,7 @@
 import polars as pl
 
-from ....profiling._type_detector import TypeDetector
-from ....profiling.config import SemanticType
+from dataforge_ml.profiling._type_detector import TypeDetector
+from dataforge_ml.profiling.config import SemanticType
 
 
 # ---------------------------------------------------------------------------

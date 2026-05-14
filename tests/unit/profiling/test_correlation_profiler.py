@@ -1,7 +1,7 @@
 import polars as pl
 
-from ....profiling._correlation_profiler import CorrelationProfiler
-from ....profiling._correlation_config import CorrelationProfileResult
+from dataforge_ml.profiling._correlation_profiler import CorrelationProfiler
+from dataforge_ml.profiling._correlation_config import CorrelationProfileResult
 
 
 # ---------------------------------------------------------------------------

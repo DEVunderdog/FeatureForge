@@ -1,6 +1,6 @@
 import polars as pl
 
-from ....profiling._missingness_profiler import MissingnessProfiler
+from dataforge_ml.profiling._missingness_profiler import MissingnessProfiler
 
 
 # ---------------------------------------------------------------------------

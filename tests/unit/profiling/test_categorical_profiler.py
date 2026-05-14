@@ -1,8 +1,8 @@
 import polars as pl
 import pytest
 
-from ....profiling._categorical import CategoricalProfiler
-from ....profiling._categorical_config import (
+from dataforge_ml.profiling._categorical import CategoricalProfiler
+from dataforge_ml.profiling._categorical_config import (
     CategoricalFlag,
     CategoricalProfileResult,
     CategoricalStats,

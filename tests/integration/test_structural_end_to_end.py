@@ -1,16 +1,16 @@
 import pytest
-from ...profiling.structural import StructuralProfiler
-from ...profiling.config import (
+from dataforge_ml.profiling.structural import StructuralProfiler
+from dataforge_ml.profiling.config import (
     ProfileConfig,
     StructuralProfileResult,
     SemanticType,
 )
-from ...profiling._numeric_config import NumericStats
-from ...profiling._categorical_config import CategoricalStats
-from ...profiling._datetime_config import DatetimeStats
-from ...profiling._boolean_config import BooleanStats
-from ...profiling._text_config import TextStats
-from ...profiling._target_config import TargetProfileResult
+from dataforge_ml.profiling._numeric_config import NumericStats
+from dataforge_ml.profiling._categorical_config import CategoricalStats
+from dataforge_ml.profiling._datetime_config import DatetimeStats
+from dataforge_ml.profiling._boolean_config import BooleanStats
+from dataforge_ml.profiling._text_config import TextStats
+from dataforge_ml.profiling._target_config import TargetProfileResult
 
 
 def test_happy_path(mixed_df):

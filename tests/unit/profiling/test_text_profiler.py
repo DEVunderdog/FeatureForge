@@ -1,6 +1,6 @@
 import polars as pl
 
-from ....profiling._text_profiler import TextProfiler
+from dataforge_ml.profiling._text_profiler import TextProfiler
 
 
 # ---------------------------------------------------------------------------

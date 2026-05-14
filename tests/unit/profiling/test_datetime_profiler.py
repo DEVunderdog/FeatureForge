@@ -2,8 +2,8 @@ from datetime import date, datetime, timedelta, timezone
 
 import polars as pl
 
-from ....profiling._datetime_profiler import DatetimeProfiler
-from ....profiling._datetime_config import (
+from dataforge_ml.profiling._datetime_profiler import DatetimeProfiler
+from dataforge_ml.profiling._datetime_config import (
     DatetimeFlag,
     DatetimeProfileResult,
     InferredGranularity,

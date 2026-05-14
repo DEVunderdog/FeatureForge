@@ -1,7 +1,7 @@
 import polars as pl
 
-from ....profiling._boolean_profiler import BooleanProfiler
-from ....profiling._boolean_config import BooleanProfileResult, BooleanStats
+from dataforge_ml.profiling._boolean_profiler import BooleanProfiler
+from dataforge_ml.profiling._boolean_config import BooleanProfileResult, BooleanStats
 
 
 # ---------------------------------------------------------------------------

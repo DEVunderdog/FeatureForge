@@ -1,8 +1,8 @@
 import polars as pl
 import pytest
 
-from ....profiling._numeric_profiler import NumericProfiler
-from ....profiling._numeric_config import (
+from dataforge_ml.profiling._numeric_profiler import NumericProfiler
+from dataforge_ml.profiling._numeric_config import (
     KurtosisTag,
     NumericFlag,
     NumericProfileResult,

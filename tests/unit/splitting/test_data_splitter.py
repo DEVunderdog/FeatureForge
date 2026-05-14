@@ -1,8 +1,8 @@
 import polars as pl
 import pytest
 
-from ....splitting._splitter import DataSplitter
-from ....splitting._config import FoldResult, SplitResult
+from dataforge_ml.splitting._splitter import DataSplitter
+from dataforge_ml.splitting._config import FoldResult, SplitResult
 
 
 # ---------------------------------------------------------------------------
@@ -175,7 +175,7 @@ def test_different_seeds_produce_different_splits(df):
 
 
 def test_no_profiling_import():
-    import splitting._splitter as mod
+    import dataforge_ml.splitting._splitter as mod
     import sys
     profiling_modules = [k for k in sys.modules if k.startswith("profiling")]
     # DataSplitter module itself must not have caused profiling to be imported
