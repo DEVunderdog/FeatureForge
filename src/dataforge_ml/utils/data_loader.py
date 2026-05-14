@@ -103,8 +103,3 @@ class DataLoader:
 
         loader = _EXT_LOADERS[resolved_fmt]
         return loader(raw)
-
-
-def load(source: PathOrBuffer, fmt: str | None = None) -> pl.DataFrame:
-    """Convenience wrapper — equivalent to ``DataLoader().load(source, fmt)``."""
-    return DataLoader().load(source, fmt=fmt)

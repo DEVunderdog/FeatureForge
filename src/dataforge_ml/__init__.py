@@ -6,6 +6,7 @@ from .profiling.config import (
     StructuralProfileResult,
 )
 from .splitting import DataSplitter, SplitResult, FoldResult
+from .utils.data_loader import DataLoader
 
 __all__ = [
     "StructuralProfiler",
@@ -16,4 +17,5 @@ __all__ = [
     "DataSplitter",
     "SplitResult",
     "FoldResult",
+    "DataLoader"
 ]
