@@ -357,16 +357,17 @@ class TypeDetector:
             return
 
         if series.dtype in (pl.Utf8, pl.String):
-            lengths = series.drop_nulls().str.len_chars()
-            if lengths.len() == 0:
+            non_null = series.drop_nulls()
+            if non_null.len() == 0:
                 return
 
-            median_length = lengths.median()
+            median_length = non_null.str.len_chars().median()
+            if median_length is not None and median_length > _IDENTIFIER_MAX_MEDIAN_LENGTH:
+                return
 
-            if (
-                median_length is not None
-                and median_length > _IDENTIFIER_MAX_MEDIAN_LENGTH
-            ):
+            # Real identifiers are single tokens — no spaces.
+            # Sentences and descriptions have median_spaces > 0.
+            if float(non_null.str.count_matches(r"\s+").median() or 0.0) > 0:
                 return
 
         info.flags.append(TypeFlag.IdentifierColumn)
