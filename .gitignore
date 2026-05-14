@@ -14,3 +14,4 @@ dist
 build
 .pytest_cache
 __pycache__
+src/dataforge_ml.egg-info
