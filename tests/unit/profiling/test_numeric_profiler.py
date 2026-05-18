@@ -227,3 +227,55 @@ def test_histogram_bin_count_adapts_to_data():
     df_large = pl.DataFrame({"v": pl.Series(large, dtype=pl.Float64)})
     stats_large = NumericProfiler().profile(df_large, ["v"]).columns["v"]
     assert len(stats_large.histogram) > len(stats_small.histogram)
+
+
+# ---------------------------------------------------------------------------
+# Batched scalar stat correctness (issue #53)
+# ---------------------------------------------------------------------------
+
+
+def test_batched_stats_match_single_column_baseline():
+    # Profile 10 columns at once; each stat must equal the value produced when
+    # profiling that same column in isolation.
+    import numpy as np
+    rng = np.random.default_rng(0)
+    n_cols = 10
+    col_names = [f"col_{i}" for i in range(n_cols)]
+    data = {c: rng.normal(loc=i, scale=1.0 + i * 0.1, size=200).tolist() for i, c in enumerate(col_names)}
+    df = pl.DataFrame({c: pl.Series(v, dtype=pl.Float64) for c, v in data.items()})
+
+    batched = NumericProfiler().profile(df, col_names)
+
+    for col in col_names:
+        single = NumericProfiler().profile(df, [col]).columns[col]
+        batch_col = batched.columns[col]
+
+        assert pytest.approx(batch_col.mean, rel=1e-9) == single.mean
+        assert pytest.approx(batch_col.median, rel=1e-9) == single.median
+        assert pytest.approx(batch_col.std, rel=1e-9) == single.std
+        assert pytest.approx(batch_col.min, rel=1e-9) == single.min
+        assert pytest.approx(batch_col.max, rel=1e-9) == single.max
+
+        bp, sp = batch_col.percentiles, single.percentiles
+        for attr in ("p1", "p5", "p25", "p50", "p75", "p95", "p99"):
+            assert pytest.approx(getattr(bp, attr), rel=1e-9) == getattr(sp, attr)
+
+
+def test_batched_50_column_profiling_speed():
+    # Regression guard: 50-column profiling should complete well under 10s on
+    # any reasonable machine, confirming the single-select path is active.
+    import time
+    import numpy as np
+    rng = np.random.default_rng(1)
+    n_cols = 50
+    col_names = [f"feat_{i}" for i in range(n_cols)]
+    df = pl.DataFrame(
+        {c: pl.Series(rng.normal(size=1_000).tolist(), dtype=pl.Float64) for c in col_names}
+    )
+
+    t0 = time.perf_counter()
+    result = NumericProfiler().profile(df, col_names)
+    elapsed = time.perf_counter() - t0
+
+    assert len(result.analysed_columns) == n_cols
+    assert elapsed < 10.0, f"50-column profiling took {elapsed:.2f}s — batching may be broken"

@@ -148,9 +148,11 @@ class TargetProfiler(DatasetLevelProfiler[TargetProfileResult]):
         """Generates numeric metrics and checks for target skewness."""
         num_profiler = NumericProfiler(config=self.config)
 
-        num_profile = num_profiler._profile_column(series, n_rows)
+        col_name = series.name
+        num_result = num_profiler.profile(series.to_frame(), [col_name])
+        num_profile = num_result.columns.get(col_name)
         result.numeric_profile = num_profile
 
         # Flag Skewness (Highly skewed targets often require Log/Yeo-Johnson transforms)
-        if num_profile.skewness_severity in (SkewSeverity.High, SkewSeverity.Severe):
+        if num_profile and num_profile.skewness_severity in (SkewSeverity.High, SkewSeverity.Severe):
             result.flags.append(TargetFlag.HighlySkewed)

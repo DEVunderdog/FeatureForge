@@ -126,9 +126,8 @@ class NumericProfiler(ColumnBatchProfiler[NumericProfileResult]):
         columns: list[str],
     ) -> NumericProfileResult:
         result = NumericProfileResult()
-
         n_rows = df.height
-        # Intersect requested columns with the actual schema
+
         available = [
             c
             for c in self._resolve_columns(df.columns, columns)
@@ -136,15 +135,78 @@ class NumericProfiler(ColumnBatchProfiler[NumericProfileResult]):
         ]
         result.analysed_columns = available
 
-        for col_name in available:
-            series = df[col_name]
-            profile = self._profile_column(series, n_rows)
-            result.columns[col_name] = profile
+        if not available:
+            return result
+
+        # One df.select([...]) for all scalar stats across all columns so
+        # Polars can parallelise expression evaluation rather than running
+        # independent query plans per column.
+        exprs: list[pl.Expr] = []
+        for col in available:
+            c = pl.col(col).cast(pl.Float64, strict=False)
+            exprs.append(c.mean().alias(f"{col}__mean"))
+            exprs.append(c.median().alias(f"{col}__median"))
+            exprs.append(c.min().alias(f"{col}__min"))
+            exprs.append(c.max().alias(f"{col}__max"))
+            exprs.append(c.std(ddof=1).alias(f"{col}__std"))
+            for q in _QUANTILE_LEVELS:
+                exprs.append(
+                    c.quantile(q, interpolation="linear").alias(f"{col}__q{q}")
+                )
+
+        batch = df.select(exprs).row(0, named=True)
+
+        for col in available:
+            series = df[col]
+            f64 = series.cast(pl.Float64, strict=False)
+            clean = f64.drop_nulls()
+            profile = NumericStats()
+
+            if clean.len() == 0:
+                result.columns[col] = profile
+                continue
+
+            # Central tendency
+            mean = float(batch[f"{col}__mean"])
+            median = float(batch[f"{col}__median"])
+            profile.mean = mean
+            profile.median = median
+            if median == 0.0:
+                profile.mean_median_ratio = float("inf") if mean != 0.0 else 1.0
+            else:
+                profile.mean_median_ratio = mean / median
+
+            # Range
+            profile.min = float(batch[f"{col}__min"])
+            profile.max = float(batch[f"{col}__max"])
+
+            # Spread — Polars returns null for std with ddof=1 on a single row
+            std_val = batch[f"{col}__std"]
+            profile.std = float(std_val) if std_val is not None else 0.0
+            profile.variance = profile.std ** 2
+
+            # Percentiles
+            q_vals = [batch[f"{col}__q{q}"] for q in _QUANTILE_LEVELS]
+            profile.percentiles = PercentileSnapshot(
+                p1=q_vals[0], p5=q_vals[1], p25=q_vals[2], p50=q_vals[3],
+                p75=q_vals[4], p95=q_vals[5], p99=q_vals[6],
+            )
+
+            # Frequency / distribution stays per-column (returns a frame, not a scalar)
+            self._compute_frequency_and_distribution(series, clean, profile, n_rows)
+
+            # Shape stays per-column (delegates to scipy on a numpy array)
+            self._compute_shape(clean, profile)
+
+            self._check_scale_anomaly(profile)
+
+            result.columns[col] = profile
 
         return result
 
     # ------------------------------------------------------------------
-    # Per-column driver
+    # Per-column helpers (frequency/distribution and shape only —
+    # scalar stats are now batched in _run above)
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -206,73 +268,8 @@ class NumericProfiler(ColumnBatchProfiler[NumericProfileResult]):
                 for i in range(len(counts))
             ]
 
-    def _profile_column(
-        self,
-        series: pl.Series,
-        n_rows: int,
-    ) -> NumericStats:
-        profile = NumericStats()
-
-        f64 = series.cast(pl.Float64, strict=False)
-        clean = f64.drop_nulls()
-
-        if clean.len() == 0:
-            return profile
-
-        self._compute_central_tendency(clean, profile)
-        self._compute_range(clean, profile)
-        self._compute_frequency_and_distribution(series, clean, profile, n_rows)
-        self._compute_percentiles(clean, profile)
-        self._compute_spread(clean, profile)
-        self._compute_shape(clean, profile)
-        self._check_scale_anomaly(profile)
-
-        return profile
-
     # ------------------------------------------------------------------
-    # Step 1: Central tendency
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _compute_central_tendency(
-        clean: pl.Series,
-        profile: NumericStats,
-    ) -> None:
-        mean = float(clean.mean())  # type: ignore[arg-type]
-        median = float(clean.median())  # type: ignore[arg-type]
-
-        profile.mean = mean
-        profile.median = median
-
-        # Mean/median ratio: primary skew indicator at a glance.
-        # Guard against division by zero (e.g. a column of all zeros).
-        if median == 0.0:
-            profile.mean_median_ratio = float("inf") if mean != 0.0 else 1.0
-        else:
-            profile.mean_median_ratio = mean / median
-
-    # ------------------------------------------------------------------
-    # Step 2: Spread
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _compute_spread(
-        clean: pl.Series,
-        profile: NumericStats,
-    ) -> None:
-        n = clean.len()
-        if n < 2:
-            # Std / variance undefined for a single observation
-            profile.std = 0.0
-            profile.variance = 0.0
-            return
-
-        std = float(clean.std(ddof=1))  # type: ignore[arg-type]
-        profile.std = std
-        profile.variance = std**2
-
-    # ------------------------------------------------------------------
-    # Step 3: Shape — skewness and kurtosis
+    # Step 2: Shape — skewness and kurtosis
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -314,48 +311,7 @@ class NumericProfiler(ColumnBatchProfiler[NumericProfileResult]):
             profile.kurtosis_tag = KurtosisTag.Mesokurtic
 
     # ------------------------------------------------------------------
-    # Step 4: Range
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _compute_range(
-        clean: pl.Series,
-        profile: NumericStats,
-    ) -> None:
-        profile.min = float(clean.min())  # type: ignore[arg-type]
-        profile.max = float(clean.max())  # type: ignore[arg-type]
-
-    # ------------------------------------------------------------------
-    # Step 5: Percentiles
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _compute_percentiles(
-        clean: pl.Series,
-        profile: NumericStats,
-    ) -> None:
-        # Polars quantile() is O(n log n) once; compute all at once via select
-        # to avoid repeated passes.
-        quantile_frame = pl.DataFrame({"v": clean}).select(
-            [
-                pl.col("v").quantile(q, interpolation="linear").alias(f"q{i}")
-                for i, q in enumerate(_QUANTILE_LEVELS)
-            ]
-        )
-        row = quantile_frame.row(0)
-        # row order: p1, p5, p25, p50, p75, p95, p99
-        profile.percentiles = PercentileSnapshot(
-            p1=row[0],
-            p5=row[1],
-            p25=row[2],
-            p50=row[3],
-            p75=row[4],
-            p95=row[5],
-            p99=row[6],
-        )
-
-    # ------------------------------------------------------------------
-    # Step 6: Scale-anomaly flag
+    # Step 3: Scale-anomaly flag
     # ------------------------------------------------------------------
 
     @staticmethod
