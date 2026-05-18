@@ -35,10 +35,11 @@ _IDENTIFIER_UNIQUE_RATIO = 0.99  # >99 % unique → identifier
 _IDENTIFIER_MAX_MEDIAN_LENGTH = 40
 _DISCRETE_NUNIQUE_THRESHOLD = 20  # numeric with <20 unique values → discrete
 
-_FREE_TEXT_AVG_WORDS: int = 5  # avg word count above which → Text
-_FREE_TEXT_MEDIAN_CHARS: int = 35
-_FREE_TEXT_P90_CHARS: int = 60
+_FREE_TEXT_AVG_WORDS: int = 3
+_FREE_TEXT_MEDIAN_CHARS: int = 20
+_FREE_TEXT_P90_CHARS: int = 35
 _FREE_TEXT_MIN_UNIQUE_RATIO: float = 0.40
+_FREE_TEXT_HIGH_UNIQUE_WITH_SPACES: float = 0.70  # unique ratio above which multi-token strings → Text
 
 
 # Common boolean string values (lowercased)
@@ -77,114 +78,86 @@ class TypeDetector:
                 original_dtype=original_dtype,
                 inferred_dtype=original_dtype,
             )
-
-            # Work with a copy that may be re-assigned after coercion
             working = series
 
             # 1 & 2: Coercion for string columns
-            if series.dtype == pl.Utf8 or series.dtype == pl.String:
+            if series.dtype in (pl.Utf8, pl.String):
                 coerced, flag = self._try_numeric_coerce(series, n_rows)
                 if coerced is not None:
                     info.inferred_dtype = str(coerced.dtype)
                     info.flags.append(flag)  # type: ignore[arg-type]
                     working = coerced
-
-                    self._check_coerced_encoded_category(working, info, n_rows)
+                    self._check_coerced_encoded_category(working, info)
                 else:
                     coerced_dt, flag_dt = self._try_datetime_coerce(
-                        series, col_name, n_rows
+                        series, n_rows
                     )
                     if coerced_dt is not None:
                         info.inferred_dtype = str(coerced_dt.dtype)
                         info.flags.append(flag_dt)  # type: ignore[arg-type]
-                        working = coerced_dt
-
                         info.semantic_type = SemanticType.Datetime
                         results[col_name] = info
                         continue
 
             # 3: Boolean candidate
             self._check_boolean_candidate(working, info)
+            if TypeFlag.BooleanCandidate in info.flags:
+                info.semantic_type = SemanticType.Boolean
+                results[col_name] = info
+                continue
 
-            # Work only on numeric-ish columns for the remaining checks
+            # Native datetime types
+            if working.dtype in (pl.Date, pl.Datetime, pl.Duration, pl.Time) or isinstance(
+                working.dtype, pl.Datetime
+            ):
+                info.semantic_type = SemanticType.Datetime
+                results[col_name] = info
+                continue
+
+            # 4–7: Numeric path
             if working.dtype in _NUMERIC_DTYPES:
-                # 4 & 5: Encoded category and identifier checks — integers only.
-                # Continuous floats have high cardinality by nature and are never
-                # identifiers; restricting these checks prevents false Identifier
-                # classification of genuine numeric features.
                 if working.dtype in _INT_DTYPES:
-                    self._check_encoded_category(working, info, n_rows)
-                    self._check_identifier(working, info, n_rows)
+                    # EncodedCategory and IdentifierColumn are mutually exclusive:
+                    # low-cardinality and near-unique cannot both be true.
+                    # Check encoded category first; skip identifier if it matches.
+                    self._check_encoded_category(working, info)
+                    if TypeFlag.EncodedCategory not in info.flags:
+                        self._check_identifier(working, info, n_rows)
+                        if TypeFlag.IdentifierColumn in info.flags:
+                            self._check_sequential_index(working, info, n_rows)
 
-                # 6: Sequential index (integers only)
-                if working.dtype in _INT_DTYPES or working.dtype in (
-                    pl.Float32,
-                    pl.Float64,
-                ):
-                    self._check_sequential_index(working, info, n_rows)
-
-                # 7: Numeric kind (skip for identifiers / sequential indices)
-                if not any(
-                    info.has_flag(f)
-                    for f in (
-                        TypeFlag.IdentifierColumn,
-                        TypeFlag.SequentialIndex,
-                        TypeFlag.FloatSequentialIndex,
-                    )
-                ):
+                if TypeFlag.EncodedCategory in info.flags:
+                    info.semantic_type = SemanticType.Categorical
+                elif TypeFlag.IdentifierColumn in info.flags:
+                    info.semantic_type = SemanticType.Identifier
+                else:
                     self._classify_numeric_kind(working, info)
+                    info.semantic_type = SemanticType.Numeric
 
-            elif working.dtype == pl.Utf8 or working.dtype == pl.String:
-                # String identifier check
-                self._check_identifier(working, info, n_rows)
+                results[col_name] = info
+                continue
 
+            # String path
+            if working.dtype in (pl.Utf8, pl.String):
                 self._check_free_text(working, info, n_rows)
+                if TypeFlag.FreeTextCandidate in info.flags:
+                    info.semantic_type = SemanticType.Text
+                    results[col_name] = info
+                    continue
+                self._check_identifier(working, info, n_rows)
+                info.semantic_type = (
+                    SemanticType.Identifier
+                    if TypeFlag.IdentifierColumn in info.flags
+                    else SemanticType.Categorical
+                )
+                results[col_name] = info
+                continue
 
-            info.semantic_type = self._derive_semantic_type(
-                info,
-                working,
-                n_rows,
-            )
-
+            # Fallback
+            info.semantic_type = SemanticType.Text
             results[col_name] = info
 
         return results
-
-    @staticmethod
-    def _derive_semantic_type(
-        info: ColumnTypeInfo,
-        working: pl.Series,
-        n_rows: int,
-    ) -> SemanticType:
-        if TypeFlag.IdentifierColumn in info.flags:
-            return SemanticType.Identifier
-
-        if TypeFlag.BooleanCandidate in info.flags:
-            return SemanticType.Boolean
-
-        is_native_datetime = working.dtype in (
-            pl.Date,
-            pl.Datetime,
-            pl.Duration,
-            pl.Time,
-        ) or (hasattr(pl, "Datetime") and isinstance(working.dtype, pl.Datetime))
-
-        if is_native_datetime or TypeFlag.DatetimeCoerced in info.flags:
-            return SemanticType.Datetime
-
-        if TypeFlag.EncodedCategory in info.flags:
-            return SemanticType.Categorical
-
-        if working.dtype in (pl.Utf8, pl.String):
-            if TypeFlag.FreeTextCandidate in info.flags:
-                return SemanticType.Text
-
-            return SemanticType.Categorical
-
-        if working.dtype in _NUMERIC_DTYPES:
-            return SemanticType.Numeric
-
-        return SemanticType.Categorical
 
     # ------------------------------------------------------------------
     # Step 1: Numeric coercion
@@ -221,7 +194,7 @@ class TypeDetector:
 
     @staticmethod
     def _try_datetime_coerce(
-        series: pl.Series, col_name: str, n_rows: int
+        series: pl.Series, n_rows: int
     ) -> tuple[pl.Series, TypeFlag] | tuple[None, None]:
         """
         Attempt datetime coercion if the column name looks date-like.
@@ -269,7 +242,7 @@ class TypeDetector:
 
     @staticmethod
     def _check_coerced_encoded_category(
-        series: pl.Series, info: ColumnTypeInfo, n_rows: int
+        series: pl.Series, info: ColumnTypeInfo
     ) -> None:
         """
         Post-coercion low-cardinality check for Float64 series that originated
@@ -312,9 +285,8 @@ class TypeDetector:
 
     @staticmethod
     def _check_encoded_category(
-        series: pl.Series, info: ColumnTypeInfo, n_rows: int
+        series: pl.Series, info: ColumnTypeInfo
     ) -> None:
-        # Skip if already flagged as boolean candidate (subset of {0,1})
         if TypeFlag.BooleanCandidate in info.flags:
             return
 
@@ -441,24 +413,27 @@ class TypeDetector:
 
         char_lengths = non_null.str.len_chars()
         median_chars = float(char_lengths.median() or 0.0)
+        space_counts = non_null.str.count_matches(r"\s+")
+        median_spaces = float(space_counts.median() or 0.0)
+        median_words = median_spaces + 1.0
+        unique_ratio = series.n_unique() / n_rows if n_rows > 0 else 0.0
 
-        if median_chars > _FREE_TEXT_MEDIAN_CHARS:
+        # Multi-word strings of medium length: names, addresses, short descriptions
+        if median_chars > _FREE_TEXT_MEDIAN_CHARS and median_spaces >= 1.0:
             info.flags.append(TypeFlag.FreeTextCandidate)
             return
 
-        space_counts = non_null.str.count_matches(r"\s+")
-        median_words = float(space_counts.median() or 0.0) + 1.0
-
+        # Long average word count: sentences, paragraphs
         if median_words > _FREE_TEXT_AVG_WORDS:
             info.flags.append(TypeFlag.FreeTextCandidate)
             return
 
         p90_chars = float(char_lengths.quantile(0.9) or 0.0)
+        if p90_chars > _FREE_TEXT_P90_CHARS and unique_ratio > _FREE_TEXT_MIN_UNIQUE_RATIO:
+            info.flags.append(TypeFlag.FreeTextCandidate)
+            return
 
-        unique_ratio = series.n_unique() / n_rows if n_rows > 0 else 0.0
-
-        if (
-            p90_chars > _FREE_TEXT_P90_CHARS
-            and unique_ratio > _FREE_TEXT_MIN_UNIQUE_RATIO
-        ):
+        # High-cardinality multi-token strings that don't meet char thresholds:
+        # e.g. short full names like "John Smith", compound tokens
+        if unique_ratio >= _FREE_TEXT_HIGH_UNIQUE_WITH_SPACES and median_spaces >= 1.0:
             info.flags.append(TypeFlag.FreeTextCandidate)

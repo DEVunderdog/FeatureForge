@@ -60,3 +60,52 @@ def test_unique_short_codes_classified_as_identifier():
     df = pl.DataFrame({"sku": pl.Series(codes, dtype=pl.Utf8)})
     info = TypeDetector(columns=["sku"]).detect(df)["sku"]
     assert info.semantic_type == SemanticType.Identifier
+
+
+# ---------------------------------------------------------------------------
+# Titanic-style Name column: high-cardinality multi-word strings → Text
+# ---------------------------------------------------------------------------
+
+
+def test_titanic_name_column_classified_as_text():
+    # Reproduces the Titanic Name column: near-unique, multi-word, medium length.
+    # Previously misclassified as Categorical because thresholds were too high.
+    names = [
+        "Braund, Mr. Owen Harris",
+        "Cumings, Mrs. John Bradley (Florence Briggs Thayer)",
+        "Heikkinen, Miss. Laina",
+        "Futrelle, Mrs. Jacques Heath (Lily May Peel)",
+        "Allen, Mr. William Henry",
+        "Moran, Mr. James",
+        "McCarthy, Mr. Timothy J",
+        "Palsson, Master. Gosta Leonard",
+        "Johnson, Mrs. Oscar W (Elisabeth Vilhelmina Berg)",
+        "Nasser, Mrs. Nicholas (Adele Achem)",
+    ] * 90  # 900 rows, near-100% unique
+    df = pl.DataFrame({"Name": pl.Series(names[:891], dtype=pl.Utf8)})
+    info = TypeDetector(columns=["Name"]).detect(df)["Name"]
+    assert info.semantic_type == SemanticType.Text
+
+
+def test_low_cardinality_short_strings_stay_categorical():
+    # S/C/Q — exactly the kind of column that must NOT be Text.
+    vals = (["S"] * 644 + ["C"] * 168 + ["Q"] * 77 + [None] * 2)[:891]
+    df = pl.DataFrame({"Embarked": pl.Series(vals, dtype=pl.Utf8)})
+    info = TypeDetector(columns=["Embarked"]).detect(df)["Embarked"]
+    assert info.semantic_type == SemanticType.Categorical
+
+
+# ---------------------------------------------------------------------------
+# Unique short names with spaces: high-cardinality-with-spaces path → Text
+# ---------------------------------------------------------------------------
+
+
+def test_short_full_names_classified_as_text():
+    # "John Smith"-style names: short, exactly 2 words, near-unique.
+    # Caught by the high-unique-with-spaces path.
+    first = ["Alice", "Bob", "Carol", "David", "Eve", "Frank", "Grace", "Hank"]
+    last = ["Smith", "Jones", "Brown", "Davis", "Wilson", "Moore", "Taylor", "Anderson"]
+    names = [f"{f} {l}" for f in first for l in last]  # 64 unique names
+    df = pl.DataFrame({"full_name": pl.Series(names, dtype=pl.Utf8)})
+    info = TypeDetector(columns=["full_name"]).detect(df)["full_name"]
+    assert info.semantic_type == SemanticType.Text

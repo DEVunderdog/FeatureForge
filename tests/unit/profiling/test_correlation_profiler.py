@@ -202,3 +202,29 @@ def test_existing_numeric_pearson_behaviour_unchanged():
     )
     assert result.cramer_v_pairs == []
     assert result.eta_squared_pairs == []
+
+
+# ---------------------------------------------------------------------------
+# Cramér's V — degenerate case: near-saturated contingency table
+# ---------------------------------------------------------------------------
+
+
+def test_cramer_v_near_saturated_does_not_raise():
+    # When n_unique ≈ n_rows for a categorical column (e.g. a Name column that
+    # slipped through type detection), the bias-corrected denominator collapses
+    # to ≤ 0. The profiler must skip the pair silently rather than crashing.
+    n = 50
+    # col_a: 50 fully unique strings — r == n triggers the degenerate case
+    col_a = [f"Name_{i}" for i in range(n)]
+    col_b = ["A", "B", "C"] * 16 + ["A", "B"]
+    df = pl.DataFrame({
+        "name": pl.Series(col_a, dtype=pl.Utf8),
+        "group": pl.Series(col_b, dtype=pl.Utf8),
+    })
+    profiler = CorrelationProfiler(
+        numeric_columns=[], categorical_columns=["name", "group"]
+    )
+    # Must not raise; the degenerate pair should have cramer_v=None
+    result = profiler.profile_features(df, [], categorical_cols=["name", "group"])
+    assert len(result.cramer_v_pairs) == 1
+    assert result.cramer_v_pairs[0].cramer_v is None

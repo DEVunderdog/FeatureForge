@@ -400,7 +400,13 @@ class CorrelationProfiler(DatasetLevelProfiler[CorrelationProfileResult]):
                 phi2_corr = max(0.0, phi2 - (r - 1) * (c - 1) / (n - 1))
                 r_corr = r - (r - 1) ** 2 / (n - 1)
                 c_corr = c - (c - 1) ** 2 / (n - 1)
-                v = float(np.sqrt(phi2_corr / min(r_corr - 1, c_corr - 1)))
+                denom = min(r_corr - 1, c_corr - 1)
+                if denom <= 0:
+                    # Near-saturated contingency table (n_unique ≈ n_rows):
+                    # bias correction collapses denominator; skip the pair.
+                    pairs.append(CramerVPair(col_a=col_a, col_b=col_b))
+                    continue
+                v = float(np.sqrt(phi2_corr / denom))
                 v = max(0.0, min(1.0, v))
             except Exception as exc:
                 warnings.warn(
