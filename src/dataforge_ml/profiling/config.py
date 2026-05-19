@@ -241,6 +241,34 @@ class ProfileConfig:
     memory_threshold_mb: float = 500.0
     chunk_size: int = 100_000
 
+    def set_column_type(self, column: str, semantic_type: Union[str, "SemanticType"]) -> None:
+        """
+        Explicitly set the semantic type for a column, overriding auto-detection.
+
+        The override is the sole source of truth for that column's type — the
+        type detector's verdict is ignored during profiling.  Calling this method
+        multiple times on the same column is valid; the last call wins.
+
+        Parameters
+        ----------
+        column : str
+            Name of the column to override.
+        semantic_type : str | SemanticType
+            Target semantic type.  Accepts a plain string (e.g. ``"numeric"``,
+            ``"categorical"``) or a ``SemanticType`` enum value.  Invalid strings
+            raise ``ValueError``.
+        """
+        if isinstance(semantic_type, str):
+            try:
+                semantic_type = SemanticType(semantic_type)
+            except ValueError:
+                valid = [e.value for e in SemanticType]
+                raise ValueError(
+                    f"Unknown semantic type {semantic_type!r}. "
+                    f"Valid values: {valid}"
+                )
+        self.column_overrides[column] = semantic_type
+
     def to_dict(self) -> dict:
         return {
             "modality": str(self.modality),
